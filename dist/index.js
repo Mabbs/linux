@@ -31,7 +31,7 @@ var sections_default = {
 };
 
 // src/build/vmlinux.wasm
-var vmlinux_default = "./vmlinux-HIOJXSEQ.wasm";
+var vmlinux_default = "./vmlinux-IGZK5ONK.wasm";
 
 // src/bytes.ts
 function Struct(layout) {

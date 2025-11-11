@@ -8,26 +8,26 @@ import {
 } from "./chunk-MDV74QAN.js";
 
 // src/build/initramfs_data.cpio
-var initramfs_data_default = __toBinary("MDcwNzAxMDAwMDAyRDEwMDAwNDFFRDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMjY5MTFGQ0MxMDAwMDAwMDAwMDAwMDAwMzAwMDAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA0MDAwMDAwMDBkZXYAAAAwNzA3MDEwMDAwMDJEMjAwMDAyMTgwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxNjkxMUZDQzEwMDAwMDAwMDAwMDAwMDAzMDAwMDAwMDEwMDAwMDAwNTAwMDAwMDAxMDAwMDAwMEMwMDAwMDAwMGRldi9jb25zb2xlAAAAMDcwNzAxMDAwMDAyRDMwMDAwNDFDMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMjY5MTFGQ0MxMDAwMDAwMDAwMDAwMDAwMzAwMDAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA1MDAwMDAwMDByb290AAAwNzA3MDEwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMEIwMDAwMDAwMFRSQUlMRVIhISEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+var initramfs_data_default = __toBinary("MDcwNzAxMDAwMDAyRDEwMDAwNDFFRDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMjY5MTA3NzNDMDAwMDAwMDAwMDAwMDAwMzAwMDAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA0MDAwMDAwMDBkZXYAAAAwNzA3MDEwMDAwMDJEMjAwMDAyMTgwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxNjkxMDc3M0MwMDAwMDAwMDAwMDAwMDAzMDAwMDAwMDEwMDAwMDAwNTAwMDAwMDAxMDAwMDAwMEMwMDAwMDAwMGRldi9jb25zb2xlAAAAMDcwNzAxMDAwMDAyRDMwMDAwNDFDMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMjY5MTA3NzNDMDAwMDAwMDAwMDAwMDAwMzAwMDAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA1MDAwMDAwMDByb290AAAwNzA3MDEwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMEIwMDAwMDAwMFRSQUlMRVIhISEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
 
 // src/build/sections.json
 var sections_default = {
-  ".data.once": [189544, 617],
-  ".data..percpu": [193024, 5616],
-  ".data..percpu..shared_aligned": [225408, 3216],
-  ".init.setup": [686756, 936],
-  __param: [691068, 1800],
-  ".initcall7.init": [692916, 64],
-  ".initcallrootfs.init": [692980, 4],
-  ".initcall1.init": [692984, 28],
-  ".initcall6.init": [693012, 156],
-  ".initcallearly.init": [693168, 40],
-  ".initcall5.init": [693208, 104],
-  ".initcall4.init": [693312, 64],
-  ".initcall2.init": [702388, 28],
-  ".con_initcall.init": [707668, 8],
-  ".initcall3s.init": [707676, 4],
-  ".initcall7s.init": [707680, 4]
+  ".data.once": [190312, 622],
+  ".data..percpu": [193792, 5616],
+  ".data..percpu..shared_aligned": [226176, 3216],
+  ".init.setup": [687652, 936],
+  __param: [691964, 1800],
+  ".initcall7.init": [693812, 64],
+  ".initcallrootfs.init": [693876, 4],
+  ".initcall1.init": [693880, 32],
+  ".initcall6.init": [693912, 156],
+  ".initcallearly.init": [694068, 44],
+  ".initcall5.init": [694112, 108],
+  ".initcall4.init": [694220, 64],
+  ".initcall2.init": [703296, 28],
+  ".con_initcall.init": [708564, 8],
+  ".initcall3s.init": [708572, 4],
+  ".initcall7s.init": [708576, 4]
 };
 
 // src/build/vmlinux.wasm
@@ -460,6 +460,7 @@ var Virtqueue = class {
 var VirtioDevice = class {
   features = TransportFeatures.VERSION_1 | TransportFeatures.RING_PACKED | TransportFeatures.INDIRECT_DESC;
   trigger_interrupt = (kind) => {
+    void kind;
     throw new Error("trigger_interrupt called before setup");
   };
   vqs = [];
@@ -508,24 +509,14 @@ var BlockDevice = class extends VirtioDevice {
   constructor(storage) {
     super();
     this.#storage = storage;
-    if (storage.flush) this.features |= BlockDeviceFeatures.FLUSH;
-    if (!storage.write) this.features |= BlockDeviceFeatures.RO;
-    this.config.capacity = BigInt(storage.capacity / 512);
+    this.features |= BlockDeviceFeatures.FLUSH;
+    this.config.capacity = BigInt(this.#storage.byteLength / 512);
   }
-  async notify(vq) {
+  notify(vq) {
     assert(vq === 0);
     const queue = this.vqs[vq];
     assert(queue);
     for (const chain of queue) {
-      let set_status2 = function(value) {
-        assert(status && status.writable, "status must be writable");
-        assert(
-          status.array.byteLength === 1,
-          `status size is ${status.array.byteLength}`
-        );
-        status.array[0] = value;
-      };
-      var set_status = set_status2;
       const [header, data, status, trailing] = chain;
       assert(header && !header.writable, "header must be readonly");
       assert(
@@ -533,51 +524,28 @@ var BlockDevice = class extends VirtioDevice {
         `header size is ${header.array.byteLength}`
       );
       assert(data, "data must exist");
+      assert(status && status.writable, "status must be writable");
+      assert(
+        status.array.byteLength === 1,
+        `status size is ${status.array.byteLength}`
+      );
       assert(!trailing, "too many descriptors");
       const request = new BlockDeviceRequest(header.array);
       let n = 0;
       switch (request.type) {
         case BlockDeviceRequestType.IN: {
           assert(data.writable, "data must be writable when IN");
-          const arr = await this.#storage.read(
-            Number(request.sector) * 512,
-            data.array.byteLength
-          );
-          data.array.set(arr);
-          n = arr.byteLength;
-          set_status2(BlockDeviceStatus.OK);
-          break;
-        }
-        case BlockDeviceRequestType.OUT: {
-          if (!this.#storage.write) {
-            set_status2(BlockDeviceStatus.UNSUPP);
-            break;
-          }
-          assert(!data.writable, "data must be readonly when OUT");
-          n = await this.#storage.write(
-            Number(request.sector) * 512,
-            data.array
-          );
-          set_status2(BlockDeviceStatus.OK);
-          break;
-        }
-        case BlockDeviceRequestType.FLUSH: {
-          if (!this.#storage.flush) {
-            set_status2(BlockDeviceStatus.UNSUPP);
-            break;
-          }
-          await this.#storage.flush();
-          set_status2(BlockDeviceStatus.OK);
-          break;
-        }
-        case BlockDeviceRequestType.GET_ID: {
-          console.log("GET_ID");
-          set_status2(BlockDeviceStatus.OK);
+          const start = Number(request.sector) * 512;
+          let end = start + data.array.byteLength;
+          if (end >= this.#storage.length) end = this.#storage.length - 1;
+          data.array.set(this.#storage.subarray(start, end));
+          n = end - start;
+          status.array[0] = BlockDeviceStatus.OK;
           break;
         }
         default:
           console.error("unknown request type", request.type);
-          set_status2(BlockDeviceStatus.UNSUPP);
+          status.array[0] = BlockDeviceStatus.UNSUPP;
       }
       chain.release(n);
     }

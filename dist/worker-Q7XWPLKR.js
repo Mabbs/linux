@@ -1,7 +1,8 @@
 import {
+  HALT_KERNEL,
   assert,
   kernel_imports
-} from "./chunk-MDV74QAN.js";
+} from "./chunk-QXRZASYZ.js";
 
 // src/worker.ts
 var unavailable = () => {
@@ -98,6 +99,7 @@ function user_imports({
             call_entry();
           } catch (error) {
             if (error === HALT_USER) continue;
+            if (error === HALT_KERNEL) throw error;
             console.log("error running user module:", String(error));
             return;
           }
@@ -214,6 +216,11 @@ self.onmessage = (event) => {
     }
   };
   const instance = new WebAssembly.Instance(vmlinux, imports);
-  instance.exports.__indirect_function_table.get(fn)(arg);
+  try {
+    instance.exports.__indirect_function_table.get(fn)(arg);
+  } catch (error) {
+    if (error === HALT_KERNEL) return;
+    throw error;
+  }
 };
-//# sourceMappingURL=worker-LU7CMXZM.js.map
+//# sourceMappingURL=worker-Q7XWPLKR.js.map

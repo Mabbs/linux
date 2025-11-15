@@ -57,20 +57,13 @@ declare const BlockDeviceConfig_base: (new (view: ArrayBufferView) => {
 }>;
 declare class BlockDeviceConfig extends BlockDeviceConfig_base {
 }
-type MaybePromise<T> = T | Promise<T>;
-export interface BlockDeviceStorage {
-    read(offset: number, length: number): MaybePromise<Uint8Array>;
-    write?(offset: number, data: Uint8Array): MaybePromise<number>;
-    flush?(): MaybePromise<void>;
-    capacity: number;
-}
 export declare class BlockDevice extends VirtioDevice<BlockDeviceConfig> {
     #private;
     ID: number;
     config_bytes: Uint8Array;
     config: BlockDeviceConfig;
-    constructor(storage: BlockDeviceStorage);
-    notify(vq: number): Promise<void>;
+    constructor(storage: Uint8Array);
+    notify(vq: number): void;
 }
 export declare class ConsoleDevice extends VirtioDevice<EmptyStruct> {
     #private;

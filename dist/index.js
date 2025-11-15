@@ -5,33 +5,33 @@ import {
   get_script_path,
   kernel_imports,
   unreachable
-} from "./chunk-MDV74QAN.js";
+} from "./chunk-QXRZASYZ.js";
 
 // src/build/initramfs_data.cpio
-var initramfs_data_default = __toBinary("MDcwNzAxMDAwMDAyRDEwMDAwNDFFRDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMjY5MTA3NzNDMDAwMDAwMDAwMDAwMDAwMzAwMDAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA0MDAwMDAwMDBkZXYAAAAwNzA3MDEwMDAwMDJEMjAwMDAyMTgwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxNjkxMDc3M0MwMDAwMDAwMDAwMDAwMDAzMDAwMDAwMDEwMDAwMDAwNTAwMDAwMDAxMDAwMDAwMEMwMDAwMDAwMGRldi9jb25zb2xlAAAAMDcwNzAxMDAwMDAyRDMwMDAwNDFDMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMjY5MTA3NzNDMDAwMDAwMDAwMDAwMDAwMzAwMDAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA1MDAwMDAwMDByb290AAAwNzA3MDEwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMEIwMDAwMDAwMFRSQUlMRVIhISEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+var initramfs_data_default = __toBinary("MDcwNzAxMDAwMDAyRDEwMDAwNDFFRDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMjY5MThBNEVFMDAwMDAwMDAwMDAwMDAwMzAwMDAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA0MDAwMDAwMDBkZXYAAAAwNzA3MDEwMDAwMDJEMjAwMDAyMTgwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxNjkxOEE0RUUwMDAwMDAwMDAwMDAwMDAzMDAwMDAwMDEwMDAwMDAwNTAwMDAwMDAxMDAwMDAwMEMwMDAwMDAwMGRldi9jb25zb2xlAAAAMDcwNzAxMDAwMDAyRDMwMDAwNDFDMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMjY5MThBNEVFMDAwMDAwMDAwMDAwMDAwMzAwMDAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA1MDAwMDAwMDByb290AAAwNzA3MDEwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMEIwMDAwMDAwMFRSQUlMRVIhISEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
 
 // src/build/sections.json
 var sections_default = {
-  ".data.once": [190312, 622],
-  ".data..percpu": [193792, 5616],
-  ".data..percpu..shared_aligned": [226176, 3216],
-  ".init.setup": [687652, 936],
-  __param: [691964, 1800],
-  ".initcall7.init": [693812, 64],
-  ".initcallrootfs.init": [693876, 4],
-  ".initcall1.init": [693880, 32],
-  ".initcall6.init": [693912, 156],
-  ".initcallearly.init": [694068, 44],
-  ".initcall5.init": [694112, 108],
-  ".initcall4.init": [694220, 64],
-  ".initcall2.init": [703296, 28],
-  ".con_initcall.init": [708564, 8],
-  ".initcall3s.init": [708572, 4],
-  ".initcall7s.init": [708576, 4]
+  ".data.once": [191656, 635],
+  ".data..percpu": [195136, 8176],
+  ".data..percpu..shared_aligned": [230080, 3216],
+  ".init.setup": [691716, 972],
+  __param: [696060, 1800],
+  ".initcall7.init": [697908, 64],
+  ".initcallrootfs.init": [697972, 4],
+  ".initcall1.init": [697976, 32],
+  ".initcall6.init": [698008, 160],
+  ".initcallearly.init": [698168, 44],
+  ".initcall5.init": [698212, 108],
+  ".initcall4.init": [698320, 64],
+  ".initcall2.init": [707396, 28],
+  ".con_initcall.init": [712660, 8],
+  ".initcall3s.init": [712668, 4],
+  ".initcall7s.init": [712672, 4]
 };
 
 // src/build/vmlinux.wasm
-var vmlinux_default = "./vmlinux-IGZK5ONK.wasm";
+var vmlinux_default = "./vmlinux-XI3ECHBB.wasm";
 
 // src/bytes.ts
 function Struct(layout) {
@@ -460,7 +460,6 @@ var Virtqueue = class {
 var VirtioDevice = class {
   features = TransportFeatures.VERSION_1 | TransportFeatures.RING_PACKED | TransportFeatures.INDIRECT_DESC;
   trigger_interrupt = (kind) => {
-    void kind;
     throw new Error("trigger_interrupt called before setup");
   };
   vqs = [];
@@ -690,7 +689,7 @@ function virtio_imports({
 }
 
 // src/index.ts
-var worker_url = get_script_path(() => import("./worker-LU7CMXZM.js"), import.meta);
+var worker_url = get_script_path(() => import("./worker-Q7XWPLKR.js"), import.meta);
 var vmlinux_response = fetch(new URL(vmlinux_default, import.meta.url));
 var vmlinux_promise = "compileStreaming" in WebAssembly ? WebAssembly.compileStreaming(vmlinux_response) : vmlinux_response.then((r) => r.arrayBuffer()).then(WebAssembly.compile);
 var INITCPIO_ADDR = 2097152;

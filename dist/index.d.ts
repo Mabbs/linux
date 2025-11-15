@@ -1,7 +1,7 @@
 import { type DeviceTreeNode } from "./devicetree.ts";
 import { EventEmitter } from "./util.ts";
 import { VirtioDevice } from "./virtio.ts";
-export { BlockDevice, type BlockDeviceStorage, ConsoleDevice, EntropyDevice, } from "./virtio.ts";
+export { BlockDevice, ConsoleDevice, EntropyDevice } from "./virtio.ts";
 export declare class Machine extends EventEmitter<{
     error: ErrorEvent;
 }> {

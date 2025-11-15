@@ -40,6 +40,7 @@ var EventEmitter = class {
 };
 
 // src/wasm.ts
+var HALT_KERNEL = Symbol("halt kernel");
 function kernel_imports({
   is_worker,
   memory,
@@ -58,6 +59,7 @@ function kernel_imports({
     halt_worker: () => {
       if (!is_worker) throw new Error("Halt called in main thread");
       self.close();
+      throw HALT_KERNEL;
     },
     boot_console_write: (msg, len) => {
       boot_console_write(memory.buffer.slice(msg, msg + len));
@@ -104,6 +106,7 @@ export {
   unreachable,
   get_script_path,
   EventEmitter,
+  HALT_KERNEL,
   kernel_imports
 };
-//# sourceMappingURL=chunk-MDV74QAN.js.map
+//# sourceMappingURL=chunk-QXRZASYZ.js.map

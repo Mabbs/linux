@@ -46,6 +46,7 @@ export interface Imports {
         notify(dev: number, vq: number): void;
     };
 }
+export declare const HALT_KERNEL: unique symbol;
 export declare function kernel_imports({ is_worker, memory, spawn_worker, boot_console_write, boot_console_close, run_on_main, get_user_module, get_user_memory, }: {
     is_worker: boolean;
     memory: WebAssembly.Memory;

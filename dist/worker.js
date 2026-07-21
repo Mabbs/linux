@@ -3,6 +3,11 @@ import { platform } from "./platform.js";
 import { assert } from "./util.js";
 import { read_wasm_memories } from "./wasm-binary.js";
 import { allocate_shared_memory, HALT_KERNEL, jsexec_imports, kernel_imports, } from "./wasm.js";
+// Safari caps shared WebAssembly.Memory address-space reservation well below
+// the 4 GiB wasm32 limit.  Cap user memory to the same 512 MiB used for
+// kernel memory so instantiation does not throw RangeError on Safari.  The
+// upstream allocate_shared_memory() backoff alone was not enough on Safari.
+const MAX_MEMORY_PAGES = 0x2000;
 const unavailable = () => {
     throw new Error("not available on worker thread");
 };
@@ -128,7 +133,7 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user: parent,
                         return -8; // exec format error
                     }
                     minimum = Number(memory_import.type.minimum);
-                    maximum = Math.min(Number(memory_import.type.maximum), rlimit_pages);
+                    maximum = Math.min(Number(memory_import.type.maximum), rlimit_pages, MAX_MEMORY_PAGES);
                 }
                 catch {
                     return -8; // exec format error
@@ -263,7 +268,8 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user: parent,
         },
     };
 }
-function start({ fn, arg, vmlinux, memory, user: parent_user }) {
+channel.on_message((data) => {
+    const { fn, arg, vmlinux, memory, user: parent_user } = data;
     const user = user_imports({
         kernel_memory: memory,
         get_kernel_instance: () => instance,
@@ -280,18 +286,11 @@ function start({ fn, arg, vmlinux, memory, user: parent_user }) {
             is_worker: true,
             memory,
             spawn_worker(fn, arg, name, user) {
-                const direct = new MessageChannel();
                 postMessage({
                     type: "spawn_worker",
-                    name,
-                    port: direct.port1,
-                }, [direct.port1]);
-                direct.port2.postMessage({
-                    type: "init",
                     fn,
                     arg,
-                    vmlinux,
-                    memory,
+                    name,
                     user,
                 });
             },
@@ -310,7 +309,7 @@ function start({ fn, arg, vmlinux, memory, user: parent_user }) {
             get_user_context() {
                 return user.context;
             },
-            worker_exit() {
+            on_halt() {
                 postMessage({ type: "worker_exit" });
             },
         }),
@@ -361,19 +360,4 @@ function start({ fn, arg, vmlinux, memory, user: parent_user }) {
             return;
         throw error;
     }
-}
-channel.on_message((raw) => {
-    const message = raw;
-    // Initial workers receive InitMessage directly from the page. Workers
-    // spawned by another worker receive their InitMessage over this port, which
-    // works around a WebKit bug reclaiming shared Wasm memory across JS VMs.
-    if (message.type === "forwarded_init") {
-        message.port.onmessage = ({ data }) => {
-            message.port.close();
-            start(data);
-        };
-        message.port.start();
-        return;
-    }
-    start(message);
 });

@@ -24,13 +24,13 @@ const web = {
                 : new Error(event.message || "machine worker failed"));
         };
         return {
-            post: (message, transfer) => worker.postMessage(message, transfer ?? []),
+            post: (message) => worker.postMessage(message),
             terminate: async () => worker.terminate(),
         };
     },
     worker_channel() {
         return {
-            post: (message, transfer) => self.postMessage(message, transfer ?? []),
+            post: (message) => self.postMessage(message),
             on_message: (handler) => {
                 self.onmessage = (event) => handler(event.data);
             },
@@ -55,14 +55,14 @@ function node(getBuiltinModule, process) {
             worker.on("message", handlers.on_message);
             worker.on("error", handlers.on_error);
             return {
-                post: (message, transfer) => worker.postMessage(message, transfer),
+                post: (message) => worker.postMessage(message),
                 terminate: async () => void await worker.terminate(),
             };
         },
         worker_channel() {
             assert(parentPort, "not in a worker");
             return {
-                post: (message, transfer) => parentPort.postMessage(message, transfer),
+                post: (message) => parentPort.postMessage(message),
                 on_message: (handler) => parentPort.on("message", handler),
             };
         },

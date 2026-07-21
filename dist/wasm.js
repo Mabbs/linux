@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT
 import { platform } from "./platform.js";
-/**
- * Allocates a shared memory, halving the maximum whenever the engine refuses
- * to reserve that much address space, degrading as far as the initial size.
- */
+const MINIMUM_BACKOFF_MAXIMUM_PAGES = 8192; // 512 MiB
+// Cap the maximum of each forked (COPY) process's memory well below the
+// parent's maximum.  Every non-CLONE_VM fork allocates a brand-new shared
+// WebAssembly.Memory whose `maximum` reserves address space in the browser.
+// With the parent's 512 MiB maximum, ~180 forks exhaust Safari's address
+// space.  128 MiB per forked process is ample for busybox-class commands
+// while allowing ~4x more concurrent forks before exhaustion.
+const USER_COPY_MAXIMUM_PAGES = 0x800; // 128 MiB
 export function allocate_shared_memory(initial_pages, preferred_maximum_pages, allocate = (descriptor) => new WebAssembly.Memory(descriptor)) {
     let maximum_pages = preferred_maximum_pages;
     for (;;) {
@@ -18,7 +22,7 @@ export function allocate_shared_memory(initial_pages, preferred_maximum_pages, a
             };
         }
         catch (error) {
-            const smaller_maximum = Math.max(initial_pages, Math.floor(maximum_pages / 2));
+            const smaller_maximum = Math.max(initial_pages, MINIMUM_BACKOFF_MAXIMUM_PAGES, Math.floor(maximum_pages / 2));
             if (!(error instanceof RangeError) || smaller_maximum >= maximum_pages) {
                 throw error;
             }
@@ -36,7 +40,7 @@ export var MachineTerminationReason;
     MachineTerminationReason[MachineTerminationReason["Panic"] = 1] = "Panic";
 })(MachineTerminationReason || (MachineTerminationReason = {}));
 export const HALT_KERNEL = Symbol("halt kernel");
-export function kernel_imports({ is_worker, memory, spawn_worker, boot_console_write, boot_console_close, terminate_machine, run_on_main, get_user_context, worker_exit, }) {
+export function kernel_imports({ is_worker, memory, spawn_worker, boot_console_write, boot_console_close, terminate_machine, run_on_main, get_user_context, on_halt, }) {
     return {
         breakpoint: () => {
             debugger;
@@ -44,8 +48,7 @@ export function kernel_imports({ is_worker, memory, spawn_worker, boot_console_w
         halt_worker: () => {
             if (!is_worker)
                 throw new Error("Halt called in main thread");
-            // Messages posted after platform.quit() are not guaranteed to arrive.
-            worker_exit();
+            on_halt?.();
             platform.quit();
             throw HALT_KERNEL;
         },
@@ -105,7 +108,8 @@ export function kernel_imports({ is_worker, memory, spawn_worker, boot_console_w
                         break;
                     case WASM_USER_MEMORY_COPY:
                         try {
-                            const copied = allocate_shared_memory(memory_pages, context.maximum_pages);
+                            const copy_maximum = Math.max(memory_pages, Math.min(context.maximum_pages, USER_COPY_MAXIMUM_PAGES));
+                            const copied = allocate_shared_memory(memory_pages, copy_maximum);
                             new Uint8Array(copied.memory.buffer).set(new Uint8Array(context.memory.buffer));
                             user = {
                                 module: context.module,

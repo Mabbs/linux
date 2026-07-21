@@ -1,20 +1,17 @@
 import { type MachineTerminationReason, type UserContext } from "./wasm.ts";
 export interface InitMessage {
-    type: "init";
     fn: number;
     arg: number;
     vmlinux: WebAssembly.Module;
     memory: WebAssembly.Memory;
     user: UserContext | null;
 }
-export interface ForwardedInitMessage {
-    type: "forwarded_init";
-    port: MessagePort;
-}
 export type WorkerMessage = {
     type: "spawn_worker";
+    fn: number;
+    arg: number;
     name: string;
-    port: MessagePort;
+    user: UserContext | null;
 } | {
     type: "boot_console_write";
     message: ArrayBuffer;

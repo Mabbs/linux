@@ -40,12 +40,16 @@ const resources = (async () => {
     };
 })();
 const PAGE_SIZE = 0x10000;
-// Leave the final wasm32 page out so the physical-memory size fits in u32.
-const KERNEL_MEMORY_MAXIMUM_PAGES = 0xffff;
+// Cap at 512 MiB (8192 pages) for Safari compatibility.
+// Safari reserves address space up to `maximum` for shared memories and
+// throws RangeError: Out of memory well before the 4 GiB wasm32 limit.
+// The upstream allocate_shared_memory() backoff did not reliably prevent the
+// RangeError on Safari, so cap the preferred maximum directly here.
+const KERNEL_MEMORY_MAXIMUM_PAGES = 0x2000;
 function kernel_initial_pages(memory, initcpio_size) {
     const maximum = BigInt(KERNEL_MEMORY_MAXIMUM_PAGES);
     assert(memory.minimum <= maximum &&
-        memory.maximum !== undefined && memory.maximum >= maximum, "Kernel memory limits are incompatible with a 4 GiB - 64 KiB memory");
+        memory.maximum !== undefined && memory.maximum >= maximum, "Kernel memory limits are incompatible with a 512 MiB memory");
     const initcpio_pages = Math.ceil(initcpio_size / PAGE_SIZE);
     const initial = Number(memory.minimum) + initcpio_pages;
     assert(initial <= KERNEL_MEMORY_MAXIMUM_PAGES, "Initramfs does not fit in kernel memory");
@@ -88,7 +92,7 @@ function merge_devicetree(target, source) {
  */
 export async function spawnMachine(options) {
     const devices = options.devices;
-    const workers = new Set();
+    const workers = [];
     let closed = false;
     const closed_promise = Promise.withResolvers();
     // Lifecycle promises on platform objects do not cause unhandled rejections
@@ -108,7 +112,12 @@ export async function spawnMachine(options) {
         closed = true;
         for (const device of devices)
             close_virtio_device(device);
-        await Promise.all(Array.from(workers, (worker) => worker.terminate()));
+        try {
+            await Promise.all(workers.splice(0).map((worker) => worker.terminate()));
+        }
+        catch (termination_error) {
+            error ??= termination_error;
+        }
         boot_console_close();
         if (error === undefined)
             closed_promise.resolve();
@@ -173,7 +182,7 @@ export async function spawnMachine(options) {
         // The imports must exist before instantiation returns the instance they
         // call back into, but they only run once exports.boot() starts the kernel.
         let instance;
-        const start_worker = (name, init) => {
+        const spawn_worker = (fn, arg, name, user) => {
             if (closed)
                 return;
             const worker = platform.spawn_worker(name, {
@@ -181,18 +190,14 @@ export async function spawnMachine(options) {
                     const message = raw;
                     switch (message.type) {
                         case "worker_exit": {
-                            // The worker has already closed itself, but browsers only
-                            // reliably release its memory reservations once the handle is
-                            // terminated and dropped.
-                            workers.delete(worker);
+                            const idx = workers.indexOf(worker);
+                            if (idx >= 0)
+                                workers.splice(idx, 1);
                             void worker.terminate();
                             break;
                         }
                         case "spawn_worker":
-                            start_worker(message.name, {
-                                type: "forwarded_init",
-                                port: message.port,
-                            });
+                            spawn_worker(message.fn, message.arg, message.name, message.user);
                             break;
                         case "boot_console_write":
                             boot_console_write(message.message);
@@ -243,12 +248,8 @@ export async function spawnMachine(options) {
                 },
                 on_error: finish,
             });
-            workers.add(worker);
-            worker.post(init, init.type === "forwarded_init" ? [init.port] : undefined);
-        };
-        const spawn_worker = (fn, arg, name, user) => {
-            start_worker(name, {
-                type: "init",
+            workers.push(worker);
+            worker.post({
                 fn,
                 arg,
                 vmlinux,
@@ -285,7 +286,6 @@ export async function spawnMachine(options) {
                 terminate_machine: unavailable,
                 run_on_main: unavailable,
                 get_user_context: unavailable,
-                worker_exit: unavailable,
             }),
             user: {
                 compile_begin: unavailable,

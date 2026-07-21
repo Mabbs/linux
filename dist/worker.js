@@ -191,13 +191,12 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user: parent,
                 assert(typeof f === "function" && f.length === 1, "Invalid function signature");
                 f(sig);
             },
-            call_siginfo_handler(trampoline, fn, sig, code, pid, uid, value, timerid, overrun) {
+            call_siginfo_handler(fn, sig, code, pid, uid, value, timerid, overrun) {
                 assert(instance);
-                const { __indirect_function_table } = instance.exports;
-                assert(__indirect_function_table instanceof WebAssembly.Table, "Invalid function table");
-                const f = __indirect_function_table.get(trampoline >>> 0);
-                assert(typeof f === "function" && f.length === 8, "Invalid siginfo trampoline");
-                f(fn, sig, code, pid, uid, value, timerid, overrun);
+                const { __wasm_call_siginfo_handler } = instance.exports;
+                assert(typeof __wasm_call_siginfo_handler === "function" &&
+                    __wasm_call_siginfo_handler.length === 8, "Missing musl siginfo trampoline");
+                __wasm_call_siginfo_handler(fn, sig, code, pid, uid, value, timerid, overrun);
             },
             // memory:
             read(to, from, n) {

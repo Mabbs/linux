@@ -60,7 +60,7 @@ export interface Imports {
         call(): void;
         switch_entry(fn: number, arg: number): void;
         call_signal_handler(fn: number, sig: number): void;
-        call_siginfo_handler(trampoline: number, fn: number, sig: number, code: number, pid: number, uid: number, value: number, timerid: number, overrun: number): void;
+        call_siginfo_handler(fn: number, sig: number, code: number, pid: number, uid: number, value: number, timerid: number, overrun: number): void;
         read(to: number, from: number, n: number): number;
         write(to: number, from: number, n: number): number;
         write_zeroes(to: number, n: number): number;

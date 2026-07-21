@@ -14,6 +14,10 @@ export interface UserContext {
     memory: WebAssembly.Memory;
     maximum_pages: number;
 }
+/**
+ * Allocates a shared memory, halving the maximum whenever the engine refuses
+ * to reserve that much address space, degrading as far as the initial size.
+ */
 export declare function allocate_shared_memory(initial_pages: number, preferred_maximum_pages: number, allocate?: (descriptor: WebAssembly.MemoryDescriptor) => WebAssembly.Memory): {
     memory: WebAssembly.Memory;
     maximum_pages: number;
@@ -73,7 +77,7 @@ export interface Imports {
     };
 }
 export declare const HALT_KERNEL: unique symbol;
-export declare function kernel_imports({ is_worker, memory, spawn_worker, boot_console_write, boot_console_close, terminate_machine, run_on_main, get_user_context, on_halt, }: {
+export declare function kernel_imports({ is_worker, memory, spawn_worker, boot_console_write, boot_console_close, terminate_machine, run_on_main, get_user_context, worker_exit, }: {
     is_worker: boolean;
     memory: WebAssembly.Memory;
     spawn_worker: (fn: number, arg: number, name: string, user: UserContext | null) => void;
@@ -82,7 +86,8 @@ export declare function kernel_imports({ is_worker, memory, spawn_worker, boot_c
     terminate_machine: (reason: MachineTerminationReason) => void;
     run_on_main: (fn: number, arg: number) => void;
     get_user_context: () => UserContext | null;
-    on_halt?: () => void;
+    /** Reports that this worker's kernel thread halted and the worker is closing. */
+    worker_exit: () => void;
 }): Imports["kernel"];
 export declare function jsexec_imports({ memory, is_worker, delegate_to_main, }: {
     memory: WebAssembly.Memory;

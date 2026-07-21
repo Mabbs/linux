@@ -1,5 +1,5 @@
 export interface WorkerHandle {
-    post(message: unknown): void;
+    post(message: unknown, transfer?: Transferable[]): void;
     terminate(): Promise<void>;
 }
 export interface WorkerHandlers {
@@ -8,7 +8,7 @@ export interface WorkerHandlers {
 }
 /** A worker's connection back to the thread that spawned it. */
 export interface WorkerChannel {
-    post(message: unknown): void;
+    post(message: unknown, transfer?: Transferable[]): void;
     on_message(handler: (message: unknown) => void): void;
 }
 interface Platform {

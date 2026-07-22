@@ -349,6 +349,7 @@ class TcpConnection {
     this.done = false;
     this.rexmitTimer = null; // 超时重传定时器
     this.rexmitRto = 400; // 当前重传超时(毫秒)，收到 ACK 进展时重置为 400
+    this.rexmitCount = 0;
     this.gwKey = null;
   }
 
@@ -568,6 +569,11 @@ class TcpConnection {
     this.rexmitTimer = setTimeout(() => {
       this.rexmitTimer = null;
       if (this.done) return;
+      if (this.rexmitCount++ > 8) {
+        this.done = true;
+        if (this.gwKey != null) this.gw.connections.delete(this.gwKey);
+        return;
+      }
       if (this.sent >= this.response.length) {
         // 数据已发完，只差 FIN 被确认；若 FIN 还没发就补发
         if (!this.finSent) this.pump();
@@ -590,6 +596,7 @@ class TcpConnection {
   onAck() {
     if (this.rexmitTimer) { clearTimeout(this.rexmitTimer); this.rexmitTimer = null; }
     this.rexmitRto = 400; // 收到进展，重置退避
+    this.rexmitCount = 0;
     this.pump();
   }
 }
@@ -637,7 +644,7 @@ function handleTcp(gw, ip, srcMac, srcIp) {
   const payload = tcp.subarray(dataOffset * 4);
 
   const serverIp = bytesToIp(ip.subarray(16, 20)); // 客户机的目的 IP(合成 IP)
-  const key = srcPort;
+  const key = `${srcPort}:${dstPort}`;
   let conn = gw.connections.get(key);
 
   if (flags & TCP_SYN) {

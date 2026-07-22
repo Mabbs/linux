@@ -7,6 +7,8 @@ export interface Instance extends WebAssembly.Instance {
         get_thread_area(): number;
         get_args_length(): number;
         get_args(buf: number): number;
+        copy_siginfo(to: number): number;
+        clear_siginfo(): void;
     };
 }
 export interface UserContext {
@@ -14,6 +16,8 @@ export interface UserContext {
     memory: WebAssembly.Memory;
     maximum_pages: number;
 }
+/** Whether every import can be supplied when a userspace module is instantiated. */
+export declare function user_module_imports_supported(module: WebAssembly.Module): boolean;
 /**
  * Allocates a shared memory, halving the maximum whenever the engine refuses
  * to reserve that much address space, degrading as far as the initial size.
@@ -58,7 +62,7 @@ export interface Imports {
         call(): void;
         switch_entry(fn: number, arg: number): void;
         call_signal_handler(fn: number, sig: number): void;
-        call_siginfo_handler(fn: number, sig: number, code: number, pid: number, uid: number, value: number, timerid: number, overrun: number): void;
+        call_siginfo_handler(trampoline: number, fn: number, sig: number, code: number, pid: number, uid: number, value: number, timerid: number, overrun: number): void;
         read(to: number, from: number, n: number): number;
         write(to: number, from: number, n: number): number;
         write_zeroes(to: number, n: number): number;

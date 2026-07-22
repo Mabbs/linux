@@ -2,7 +2,7 @@
 import { generate_devicetree } from "./devicetree.js";
 import { platform } from "./platform.js";
 import { assert, unreachable } from "./util.js";
-import { read_wasm_memories } from "./wasm-binary.js";
+import { read_wasm_memories } from "./wasm_binary.js";
 import { close_virtio_device, virtio_device_description, virtio_imports, } from "./virtio/core.js";
 import { allocate_shared_memory, kernel_imports, MachineTerminationReason, } from "./wasm.js";
 export { VirtioController, } from "./virtio/core.js";
@@ -106,9 +106,20 @@ export async function spawnMachine(options) {
         if (closed)
             return;
         closed = true;
-        for (const device of devices)
-            close_virtio_device(device);
-        await Promise.all(Array.from(workers, (worker) => worker.terminate()));
+        for (const device of devices) {
+            try {
+                close_virtio_device(device);
+            }
+            catch (close_error) {
+                error ??= close_error;
+            }
+        }
+        try {
+            await Promise.all(Array.from(workers, (worker) => worker.terminate()));
+        }
+        catch (termination_error) {
+            error ??= termination_error;
+        }
         boot_console_close();
         if (error === undefined)
             closed_promise.resolve();

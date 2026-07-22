@@ -39,6 +39,8 @@ export function ethernetNetwork() {
         ports.add(port);
         return {
             async send(frame) {
+                if (closed)
+                    return;
                 assert(!port.closed, "cannot send from a closed Ethernet port");
                 assert(frame.byteLength >= EthernetHeader.size, "Ethernet frame is shorter than its header");
                 const header = new EthernetHeader(frame);

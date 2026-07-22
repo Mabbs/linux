@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 import { platform } from "./platform.js";
 import { assert } from "./util.js";
-import { read_wasm_memories } from "./wasm-binary.js";
-import { allocate_shared_memory, HALT_KERNEL, kernel_imports, } from "./wasm.js";
+import { read_wasm_memories } from "./wasm_binary.js";
+import { allocate_shared_memory, HALT_KERNEL, kernel_imports, user_module_imports_supported, } from "./wasm.js";
 const unavailable = () => {
     throw new Error("not available on worker thread");
 };
@@ -14,6 +14,9 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user: parent,
     let instance = null;
     let pending_module_bytes = null;
     let pending = null;
+    // One slot per nested SA_SIGINFO callback; null means its trampoline has
+    // not requested the active signal payload yet.
+    const siginfo_copy_results = [];
     function user_atomic_word(uaddr) {
         const address = uaddr >>> 0;
         if (!context ||
@@ -52,6 +55,13 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user: parent,
                 get_thread_area: kernel_instance.exports.get_thread_area,
                 get_args_length: kernel_instance.exports.get_args_length,
                 get_args: kernel_instance.exports.get_args,
+                copy_siginfo: (to) => {
+                    const result = kernel_instance.exports.copy_siginfo(to);
+                    const current = siginfo_copy_results.length - 1;
+                    if (current >= 0)
+                        siginfo_copy_results[current] = result;
+                    return result;
+                },
             },
         });
     }
@@ -121,10 +131,7 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user: parent,
                         return -8; // exec format error
                     }
                     module = new WebAssembly.Module(bytes);
-                    const compiled_memory_imports = WebAssembly.Module.imports(module).filter(({ kind }) => kind === "memory");
-                    if (compiled_memory_imports.length !== 1 ||
-                        compiled_memory_imports[0]?.module !== "env" ||
-                        compiled_memory_imports[0]?.name !== "memory") {
+                    if (!user_module_imports_supported(module)) {
                         return -8; // exec format error
                     }
                     minimum = Number(memory_import.type.minimum);
@@ -194,12 +201,26 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user: parent,
                 assert(typeof f === "function" && f.length === 1, "Invalid function signature");
                 f(sig);
             },
-            call_siginfo_handler(fn, sig, code, pid, uid, value, timerid, overrun) {
+            call_siginfo_handler(trampoline, fn, sig) {
                 assert(instance);
-                const { __wasm_call_siginfo_handler } = instance.exports;
-                assert(typeof __wasm_call_siginfo_handler === "function" &&
-                    __wasm_call_siginfo_handler.length === 8, "Missing musl siginfo trampoline");
-                __wasm_call_siginfo_handler(fn, sig, code, pid, uid, value, timerid, overrun);
+                const { __indirect_function_table } = instance.exports;
+                assert(__indirect_function_table instanceof WebAssembly.Table, "Invalid function table");
+                const f = __indirect_function_table.get(trampoline >>> 0);
+                assert(typeof f === "function" && f.length === 2, "Invalid siginfo trampoline");
+                siginfo_copy_results.push(null);
+                try {
+                    f(fn, sig);
+                    return siginfo_copy_results.at(-1) ?? -22;
+                }
+                finally {
+                    // Non-local exits can unwind the kernel callback before its C cleanup.
+                    try {
+                        get_kernel_instance().exports.clear_siginfo();
+                    }
+                    finally {
+                        siginfo_copy_results.pop();
+                    }
+                }
             },
             // memory:
             read(to, from, n) {

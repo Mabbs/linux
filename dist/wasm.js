@@ -1,5 +1,17 @@
 // SPDX-License-Identifier: MIT
 import { platform } from "./platform.js";
+const supported_user_module_imports = new Set([
+    "env\0memory\0memory",
+    "linux\0syscall\0function",
+    "linux\0get_thread_area\0function",
+    "linux\0get_args_length\0function",
+    "linux\0get_args\0function",
+    "linux\0copy_siginfo\0function",
+]);
+/** Whether every import can be supplied when a userspace module is instantiated. */
+export function user_module_imports_supported(module) {
+    return WebAssembly.Module.imports(module).every(({ module, name, kind }) => supported_user_module_imports.has(`${module}\0${name}\0${kind}`));
+}
 /**
  * Allocates a shared memory, halving the maximum whenever the engine refuses
  * to reserve that much address space, degrading as far as the initial size.
@@ -50,8 +62,9 @@ export function kernel_imports({ is_worker, memory, spawn_worker, boot_console_w
             throw HALT_KERNEL;
         },
         terminate_machine: (reason) => {
-            if (!is_worker)
+            if (!is_worker) {
                 throw new Error("Machine termination called in main thread");
+            }
             terminate_machine(reason);
             throw HALT_KERNEL;
         },

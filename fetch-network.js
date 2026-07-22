@@ -499,7 +499,7 @@ class TcpConnection {
 
   // jsexec 服务：把请求体当成 JavaScript，在宿主(浏览器)全局环境里执行，
   // 把「最后一个表达式的完成值」作为 HTTP 响应体返回。等价于原 /dev/jsexec 设备。
-  startExec() {
+  async startExec() {
     const text = new TextDecoder().decode(this.recvBuf);
     const headerEnd = text.indexOf("\r\n\r\n");
     const header = text.slice(0, headerEnd);
@@ -513,7 +513,7 @@ class TcpConnection {
       bodyBytes = this.recvBuf.subarray(headerEnd + 4);
     }
     const src = new TextDecoder().decode(bodyBytes);
-    const result = evalJS(src);
+    const result = await evalJS(src);
     const body = new TextEncoder().encode(result);
     const head = new TextEncoder().encode(
       "HTTP/1.1 200 OK\r\n" +
@@ -608,9 +608,12 @@ function requestComplete(buf) {
   return true;
 }
 
-function evalJS(src) {
+async function evalJS(src) {
   try {
-    const r = (0, eval)(src);
+    let r = (0, eval)(src);
+    // 支持异步脚本(如 fetch 返回 Promise)：结果为 thenable 时等待其完成值，
+    // 这样 jsexec 里写 `fetch(url).then(...)` 也能拿到真正的字符串结果。
+    if (r && typeof r.then === "function") r = await r;
     return r === undefined || r === null ? "" : String(r);
   } catch (e) {
     return "Error: " + (e && e.message ? e.message : String(e));

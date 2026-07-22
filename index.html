@@ -1,185 +1,269 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Mayx's Blog Terminal</title>
-    <style>
-      @import url(vendor/xterm/xterm.css);
-      :root {
-        --bg: #fff;
-        --fg: #727272;
-        --heading: #222;
-        --link: #267CB9;
-        --border: #e5e5e5;
-        --code-bg: #f8f8f8;
-        --term-bg: #1a1b26;
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mayx's Blog Terminal</title>
+  <style>
+    @import url(vendor/xterm/xterm.css);
+
+    :root {
+      --bg: #fff;
+      --fg: #727272;
+      --heading: #222;
+      --link: #267CB9;
+      --border: #e5e5e5;
+      --code-bg: #f8f8f8;
+      --term-bg: #1a1b26;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      font: 14px/1.5 "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      color: var(--fg);
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+
+    .topbar .logo {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--heading);
+      text-decoration: none;
+    }
+
+    .topbar .logo:hover {
+      color: var(--link);
+    }
+
+    .topbar nav {
+      display: flex;
+      gap: 14px;
+      margin-left: auto;
+    }
+
+    .topbar nav a {
+      font-size: 0.85rem;
+      color: var(--link);
+      text-decoration: none;
+    }
+
+    .topbar nav a:hover {
+      text-decoration: underline;
+    }
+
+    .topbar .badge {
+      font-size: 0.75rem;
+      color: #999;
+      padding: 2px 8px;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+    }
+
+    .terminal-wrap {
+      flex: 1;
+      position: relative;
+      background: var(--term-bg);
+      overflow: hidden;
+    }
+
+    .terminal-wrap #terminal {
+      position: absolute;
+      top: 12px;
+      right: 16px;
+      bottom: 20px;
+      left: 16px;
+    }
+
+    .status-dot {
+      position: absolute;
+      top: 10px;
+      right: 14px;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      color: #6b7280;
+      font-family: monospace;
+    }
+
+    .status-dot .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #fbbf24;
+      animation: pulse 1.5s infinite;
+    }
+
+    .status-dot.booted .dot {
+      background: #34d399;
+      animation: none;
+    }
+
+    .status-dot.failed .dot {
+      background: #f87171;
+      animation: none;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
       }
-      * { box-sizing: border-box; }
-      html { height: 100%; }
-      body {
-        margin: 0; height: 100%; display: flex; flex-direction: column;
-        background: var(--bg);
-        font: 14px/1.5 "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
-        color: var(--fg);
+
+      50% {
+        opacity: 0.3;
       }
-      .topbar {
-        display: flex; align-items: center; gap: 16px;
-        padding: 10px 20px;
-        border-bottom: 1px solid var(--border);
-        background: var(--bg);
-      }
-      .topbar .logo {
-        font-size: 1.1rem; font-weight: 700; color: var(--heading);
-        text-decoration: none;
-      }
-      .topbar .logo:hover { color: var(--link); }
-      .topbar nav { display: flex; gap: 14px; margin-left: auto; }
-      .topbar nav a {
-        font-size: 0.85rem; color: var(--link); text-decoration: none;
-      }
-      .topbar nav a:hover { text-decoration: underline; }
-      .topbar .badge {
-        font-size: 0.75rem; color: #999; padding: 2px 8px;
-        border: 1px solid var(--border); border-radius: 3px;
-      }
-      .terminal-wrap {
-        flex: 1; position: relative; background: var(--term-bg);
-        overflow: hidden;
-      }
-      .terminal-wrap #terminal { position: absolute; top: 12px; right: 16px; bottom: 20px; left: 16px; }
-      .status-dot {
-        position: absolute; top: 10px; right: 14px; z-index: 10;
-        display: flex; align-items: center; gap: 6px;
-        font-size: 0.75rem; color: #6b7280; font-family: monospace;
-      }
-      .status-dot .dot {
-        width: 8px; height: 8px; border-radius: 50%;
-        background: #fbbf24; animation: pulse 1.5s infinite;
-      }
-      .status-dot.booted .dot { background: #34d399; animation: none; }
-      .status-dot.failed .dot { background: #f87171; animation: none; }
-      @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-    </style>
-    <script>window.coi = {coepCredentialless: () => false};</script>
-    <script src="coi-serviceworker.min.js"></script>
-  </head>
-  <body>
-    <div class="topbar">
-      <a class="logo" href="https://mabbs.github.io/">Mayx's Blog</a>
-      <span class="badge">WASM Linux Terminal</span>
-      <nav>
-        <a href="https://mabbs.github.io/archives.html">Archives</a>
-        <a href="https://mabbs.github.io/search.html">Search</a>
-      </nav>
+    }
+  </style>
+  <script>window.coi = { coepCredentialless: () => false };</script>
+  <script src="coi-serviceworker.min.js"></script>
+</head>
+
+<body>
+  <div class="topbar">
+    <a class="logo" href="https://mabbs.github.io/">Mayx's Blog</a>
+    <span class="badge">WASM Linux Terminal</span>
+    <nav>
+      <a href="https://mabbs.github.io/archives.html">Archives</a>
+      <a href="https://mabbs.github.io/search.html">Search</a>
+    </nav>
+  </div>
+  <div class="terminal-wrap">
+    <div class="status-dot" id="status">
+      <span class="dot"></span>
+      <span id="status-text">booting</span>
     </div>
-    <div class="terminal-wrap">
-      <div class="status-dot" id="status">
-        <span class="dot"></span>
-        <span id="status-text">booting</span>
-      </div>
-      <div id="terminal"></div>
-    </div>
-    <script type="module">
-      import { FitAddon, Terminal, WebglAddon } from "./vendor/xterm/dist.js";
-      import { blockDevice, consoleDevice, entropyDevice, spawnMachine } from "./dist/index.js";
+    <div id="terminal"></div>
+  </div>
+  <script type="module">
+    import { FitAddon, Terminal, WebglAddon } from "./vendor/xterm/dist.js";
+    import { consoleDevice, entropyDevice, spawnMachine, ethernetDevice, ethernetNetwork } from "./dist/index.js";
+    import { fetchInternetGateway } from "./fetch-network.js";
 
-      const statusEl = document.getElementById("status");
-      const statusText = document.getElementById("status-text");
-      const setStatus = (state, text) => {
-        statusEl.className = "status-dot " + state;
-        statusText.textContent = text;
-      };
+    const statusEl = document.getElementById("status");
+    const statusText = document.getElementById("status-text");
+    const setStatus = (state, text) => {
+      statusEl.className = "status-dot " + state;
+      statusText.textContent = text;
+    };
 
-      const term = new Terminal({
-        convertEol: true,
-        fontFamily: "Monaco, Menlo, Consolas, 'Courier New', monospace",
-        fontSize: 13,
-        cursorBlink: true,
-        theme: {
-          background: "#1a1b26",
-          foreground: "#a9b1d6",
-          cursor: "#c0caf5",
-          selectionBackground: "#33467c",
-          black: "#32344a",
-          red: "#f7768e",
-          green: "#9ece6a",
-          yellow: "#e0af68",
-          blue: "#7aa2f7",
-          magenta: "#ad8ee6",
-          cyan: "#449dab",
-          white: "#787c99",
-          brightBlack: "#444b6a",
-          brightRed: "#ff7a93",
-          brightGreen: "#b9f27c",
-          brightYellow: "#ff9e64",
-          brightBlue: "#7da6ff",
-          brightMagenta: "#bb9af7",
-          brightCyan: "#0db9d7",
-          brightWhite: "#acb0d0",
-        },
+    const term = new Terminal({
+      convertEol: true,
+      fontFamily: "Monaco, Menlo, Consolas, 'Courier New', monospace",
+      fontSize: 13,
+      cursorBlink: true,
+      theme: {
+        background: "#1a1b26",
+        foreground: "#a9b1d6",
+        cursor: "#c0caf5",
+        selectionBackground: "#33467c",
+        black: "#32344a",
+        red: "#f7768e",
+        green: "#9ece6a",
+        yellow: "#e0af68",
+        blue: "#7aa2f7",
+        magenta: "#ad8ee6",
+        cyan: "#449dab",
+        white: "#787c99",
+        brightBlack: "#444b6a",
+        brightRed: "#ff7a93",
+        brightGreen: "#b9f27c",
+        brightYellow: "#ff9e64",
+        brightBlue: "#7da6ff",
+        brightMagenta: "#bb9af7",
+        brightCyan: "#0db9d7",
+        brightWhite: "#acb0d0",
+      },
+    });
+    const termFit = new FitAddon();
+    term.loadAddon(termFit);
+    term.open(document.getElementById("terminal"));
+    termFit.fit();
+    window.onresize = () => termFit.fit();
+    try { term.loadAddon(new WebglAddon()); } catch (err) { }
+
+    if (!window.crossOriginIsolated) {
+      term.write("\x1b[31mError: not cross origin isolated\x1b[0m\n");
+      setStatus("failed", "error");
+      throw new Error("not cross origin isolated");
+    }
+
+    const stdin = new ReadableStream({
+      start(controller) {
+        window._stdin = controller;
+        term.onData((data) => controller.enqueue(data));
+      },
+    }).pipeThrough(new TextEncoderStream());
+
+    // Serialize all terminal writes through a queue to prevent output interleaving
+    let writeChain = Promise.resolve();
+    const enqueueWrite = (chunk) => {
+      return new Promise(resolve => {
+        writeChain = writeChain.then(() => new Promise(r => term.write(chunk, r))).then(resolve);
       });
-      const termFit = new FitAddon();
-      term.loadAddon(termFit);
-      term.open(document.getElementById("terminal"));
-      termFit.fit();
-      window.onresize = () => termFit.fit();
-      try { term.loadAddon(new WebglAddon()); } catch (err) {}
+    };
 
-      if (!window.crossOriginIsolated) {
-        term.write("\x1b[31mError: not cross origin isolated\x1b[0m\n");
-        setStatus("failed", "error");
-        throw new Error("not cross origin isolated");
-      }
+    const stdout = new WritableStream({
+      async write(chunk) { await enqueueWrite(chunk); }
+    });
+    const stdout2 = new WritableStream({
+      async write(chunk) { await enqueueWrite(chunk); }
+    });
 
-      const stdin = new ReadableStream({
-        start(controller) {
-          window._stdin = controller;
-          term.onData((data) => controller.enqueue(data));
-        },
-      }).pipeThrough(new TextEncoderStream());
+    const initcpio = await fetch("initramfs.cpio").then((res) => res.ok ? res.arrayBuffer() : null);
+    if (!initcpio) {
+      term.write("\x1b[31mFailed to fetch initramfs\x1b[0m\n");
+      setStatus("failed", "no initramfs");
+      throw new Error("no initramfs");
+    }
 
-      // Serialize all terminal writes through a queue to prevent output interleaving
-      let writeChain = Promise.resolve();
-      const enqueueWrite = (chunk) => {
-        return new Promise(resolve => {
-          writeChain = writeChain.then(() => new Promise(r => term.write(chunk, r))).then(resolve);
-        });
-      };
+    const network = ethernetNetwork();
+    const gateway = fetchInternetGateway(network, {
+      gatewayIp: "10.0.2.2",
+      gatewayMac: [0xca, 0xfe, 0xba, 0xbe, 0x07, 0x28],
+      syntheticIp: "203.0.113.1",
+      forceHttps: true, // 客户机用 http 发起时，网关自动升级为 https 去取
+      execPort: 20728, // 在网关 IP 上提供 jsexec HTTP 服务(客户机 `jsexec` 命令用)
+      fetch: (...args) => fetch(...args), // 浏览器原生 fetch，代理到真实网络
+      debug: false,
+    });
 
-      const stdout = new WritableStream({ 
-        async write(chunk) { await enqueueWrite(chunk); } 
-      });
-      const stdout2 = new WritableStream({ 
-        async write(chunk) { await enqueueWrite(chunk); } 
-      });
+    const machine = await spawnMachine({
+      cmdline: "quiet",
+      devices: [
+        new consoleDevice(stdin, stdout),
+        new entropyDevice(),
+        new ethernetDevice(network)
+      ],
+      initcpio: new Uint8Array(initcpio),
+    });
 
-      const initcpio = await fetch("initramfs.cpio").then((res) => res.ok ? res.arrayBuffer() : null);
-      if (!initcpio) {
-        term.write("\x1b[31mFailed to fetch initramfs\x1b[0m\n");
-        setStatus("failed", "no initramfs");
-        throw new Error("no initramfs");
-      }
+    machine.bootConsole.pipeTo(stdout2);
+    setStatus("booted", "ready");
+  </script>
+</body>
 
-      const ram = new Uint8Array(8 * 1024 * 1024);
-      const storage = {
-        capacity: ram.byteLength,
-        read(off, len) { return ram.slice(off, off + len); },
-        write(off, buf) { ram.set(buf, off); return buf.byteLength; },
-      };
-
-      const machine = await spawnMachine({
-        cmdline: "quiet",
-        devices: [
-          new consoleDevice(stdin, stdout),
-          new entropyDevice(),
-          new blockDevice(storage),
-        ],
-        initcpio: new Uint8Array(initcpio),
-      });
-
-      machine.bootConsole.pipeTo(stdout2);
-      setStatus("booted", "ready");
-    </script>
-  </body>
 </html>

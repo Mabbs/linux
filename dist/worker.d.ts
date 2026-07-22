@@ -28,11 +28,5 @@ export type WorkerMessage = {
     fn: number;
     arg: number;
 } | {
-    type: "jsexec_run";
-    code: string;
-    resultPtr: number;
-    resultSize: number;
-    sab: SharedArrayBuffer;
-} | {
     type: "worker_exit";
 };

@@ -14,8 +14,6 @@ export interface UserContext {
     memory: WebAssembly.Memory;
     maximum_pages: number;
 }
-/** Whether every import can be supplied when a userspace module is instantiated. */
-export declare function user_module_imports_supported(module: WebAssembly.Module): boolean;
 /**
  * Allocates a shared memory, halving the maximum whenever the engine refuses
  * to reserve that much address space, degrading as far as the initial size.
@@ -74,9 +72,6 @@ export interface Imports {
         disable_vring(dev: number, vq: number): void;
         notify(dev: number, vq: number): void;
     };
-    jsexec: {
-        run(code: number, code_len: number, result: number, result_size: number): number;
-    };
 }
 export declare const HALT_KERNEL: unique symbol;
 export declare function kernel_imports({ is_worker, memory, spawn_worker, boot_console_write, boot_console_close, terminate_machine, run_on_main, get_user_context, worker_exit, }: {
@@ -91,8 +86,3 @@ export declare function kernel_imports({ is_worker, memory, spawn_worker, boot_c
     /** Reports that this worker's kernel thread halted and the worker is closing. */
     worker_exit: () => void;
 }): Imports["kernel"];
-export declare function jsexec_imports({ memory, is_worker, delegate_to_main, }: {
-    memory: WebAssembly.Memory;
-    is_worker: boolean;
-    delegate_to_main?: (code: string, result_ptr: number, result_size: number) => number;
-}): Imports["jsexec"];

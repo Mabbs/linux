@@ -1,16 +1,5 @@
 // SPDX-License-Identifier: MIT
 import { platform } from "./platform.js";
-const supported_user_module_imports = new Set([
-    "env\0memory\0memory",
-    "linux\0syscall\0function",
-    "linux\0get_thread_area\0function",
-    "linux\0get_args_length\0function",
-    "linux\0get_args\0function",
-]);
-/** Whether every import can be supplied when a userspace module is instantiated. */
-export function user_module_imports_supported(module) {
-    return WebAssembly.Module.imports(module).every(({ module, name, kind }) => supported_user_module_imports.has(`${module}\0${name}\0${kind}`));
-}
 /**
  * Allocates a shared memory, halving the maximum whenever the engine refuses
  * to reserve that much address space, degrading as far as the initial size.
@@ -135,36 +124,5 @@ export function kernel_imports({ is_worker, memory, spawn_worker, boot_console_w
             return 0;
         },
         run_on_main,
-    };
-}
-export function jsexec_imports({ memory, is_worker, delegate_to_main, }) {
-    return {
-        run(code, code_len, result, result_size) {
-            const mem = new Uint8Array(memory.buffer);
-            // Copy from shared memory into a regular ArrayBuffer first,
-            // because TextDecoder rejects views of SharedArrayBuffer.
-            const codeBytes = new Uint8Array(code_len);
-            codeBytes.set(mem.subarray(code, code + code_len));
-            const codeStr = new TextDecoder().decode(codeBytes);
-            // Workers don't have access to window/DOM — delegate eval to the
-            // main thread via Atomics + postMessage for synchronous cross-thread
-            // communication.
-            if (is_worker && delegate_to_main) {
-                return delegate_to_main(codeStr, result, result_size);
-            }
-            let resultStr;
-            try {
-                // eslint-disable-next-line no-eval
-                const value = eval(codeStr);
-                resultStr = value === undefined ? "undefined" : String(value);
-            }
-            catch (e) {
-                resultStr = `Error: ${e instanceof Error ? e.message : String(e)}`;
-            }
-            const resultBytes = new TextEncoder().encode(resultStr);
-            const len = Math.min(resultBytes.length, result_size);
-            mem.set(resultBytes.subarray(0, len), result);
-            return len;
-        },
     };
 }

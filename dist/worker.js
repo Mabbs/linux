@@ -2,7 +2,7 @@
 import { platform } from "./platform.js";
 import { assert } from "./util.js";
 import { read_wasm_memories } from "./wasm-binary.js";
-import { allocate_shared_memory, HALT_KERNEL, jsexec_imports, kernel_imports, user_module_imports_supported, } from "./wasm.js";
+import { allocate_shared_memory, HALT_KERNEL, kernel_imports, } from "./wasm.js";
 const unavailable = () => {
     throw new Error("not available on worker thread");
 };
@@ -121,7 +121,10 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user: parent,
                         return -8; // exec format error
                     }
                     module = new WebAssembly.Module(bytes);
-                    if (!user_module_imports_supported(module)) {
+                    const compiled_memory_imports = WebAssembly.Module.imports(module).filter(({ kind }) => kind === "memory");
+                    if (compiled_memory_imports.length !== 1 ||
+                        compiled_memory_imports[0]?.module !== "env" ||
+                        compiled_memory_imports[0]?.name !== "memory") {
                         return -8; // exec format error
                     }
                     minimum = Number(memory_import.type.minimum);
@@ -318,35 +321,6 @@ function start({ fn, arg, vmlinux, memory, user: parent_user }) {
             disable_vring: unavailable,
             notify: unavailable,
         },
-        jsexec: jsexec_imports({
-            memory,
-            is_worker: true,
-            delegate_to_main: (codeStr, resultPtr, resultSize) => {
-                // Create a shared control buffer for synchronous cross-thread
-                // communication: [0] = state flag, [1] = result length.
-                const sab = new SharedArrayBuffer(8);
-                const view = new Int32Array(sab);
-                view[0] = 0;
-                postMessage({
-                    type: "jsexec_run",
-                    code: codeStr,
-                    resultPtr,
-                    resultSize,
-                    sab,
-                });
-                // Block until the main thread finishes eval and notifies us.
-                const status = Atomics.wait(view, 0, 0, 30000);
-                if (status === "timed-out") {
-                    const errorStr = "Error: jsexec timed out waiting for main thread";
-                    const errorBytes = new TextEncoder().encode(errorStr);
-                    const len = Math.min(errorBytes.length, resultSize);
-                    const mem = new Uint8Array(memory.buffer);
-                    mem.set(errorBytes.subarray(0, len), resultPtr);
-                    return len;
-                }
-                return view[1] ?? 0;
-            },
-        }),
     };
     const instance = new WebAssembly.Instance(vmlinux, imports);
     user.prepare();

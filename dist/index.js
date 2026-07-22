@@ -4,7 +4,7 @@ import { platform } from "./platform.js";
 import { assert, unreachable } from "./util.js";
 import { read_wasm_memories } from "./wasm-binary.js";
 import { close_virtio_device, virtio_device_description, virtio_imports, } from "./virtio/core.js";
-import { allocate_shared_memory, jsexec_imports, kernel_imports, MachineTerminationReason, } from "./wasm.js";
+import { allocate_shared_memory, kernel_imports, MachineTerminationReason, } from "./wasm.js";
 export { VirtioController, } from "./virtio/core.js";
 export { blockDevice } from "./virtio/block.js";
 export { consoleDevice } from "./virtio/console.js";
@@ -106,20 +106,9 @@ export async function spawnMachine(options) {
         if (closed)
             return;
         closed = true;
-        for (const device of devices) {
-            try {
-                close_virtio_device(device);
-            }
-            catch (close_error) {
-                error ??= close_error;
-            }
-        }
-        try {
-            await Promise.all(Array.from(workers, (worker) => worker.terminate()));
-        }
-        catch (termination_error) {
-            error ??= termination_error;
-        }
+        for (const device of devices)
+            close_virtio_device(device);
+        await Promise.all(Array.from(workers, (worker) => worker.terminate()));
         boot_console_close();
         if (error === undefined)
             closed_promise.resolve();
@@ -191,13 +180,6 @@ export async function spawnMachine(options) {
                 on_message(raw) {
                     const message = raw;
                     switch (message.type) {
-                        case "worker_exit": {
-                            // The worker closes itself after posting this message. Calling
-                            // terminate() here races that orderly shutdown and leaks the
-                            // worker's address-space reservations in WebKit.
-                            workers.delete(worker);
-                            break;
-                        }
                         case "spawn_worker":
                             start_worker(message.name, {
                                 type: "forwarded_init",
@@ -226,25 +208,11 @@ export async function spawnMachine(options) {
                             assert(instance);
                             instance.exports.__indirect_function_table.get(message.fn >>> 0)(message.arg);
                             break;
-                        case "jsexec_run": {
-                            const { code, resultPtr, resultSize, sab } = message;
-                            const view = new Int32Array(sab);
-                            let resultStr;
-                            try {
-                                // eslint-disable-next-line no-eval
-                                const value = eval(code);
-                                resultStr = value === undefined ? "undefined" : String(value);
-                            }
-                            catch (e) {
-                                resultStr = `Error: ${e instanceof Error ? e.message : String(e)}`;
-                            }
-                            const resultBytes = new TextEncoder().encode(resultStr);
-                            const len = Math.min(resultBytes.length, resultSize);
-                            const mem = new Uint8Array(wasm_memory.buffer);
-                            mem.set(resultBytes.subarray(0, len), resultPtr);
-                            view[1] = len;
-                            view[0] = 1;
-                            Atomics.notify(view, 0);
+                        case "worker_exit": {
+                            // The worker closes itself after posting this message. Calling
+                            // terminate() here races that orderly shutdown and leaks the
+                            // worker's address-space reservations in WebKit.
+                            workers.delete(worker);
                             break;
                         }
                         default:
@@ -321,10 +289,6 @@ export async function spawnMachine(options) {
                     assert(instance);
                     instance.exports.trigger_irq(irq);
                 },
-            }),
-            jsexec: jsexec_imports({
-                memory: wasm_memory,
-                is_worker: false,
             }),
         };
         instance = (await WebAssembly.instantiate(vmlinux, imports));

@@ -185,7 +185,13 @@ function makeProxyHandler(gw, scheme, port, opts = {}) {
       try { init.headers.set(k, v); } catch { }
     }
     if (["POST", "PUT", "PATCH"].includes(request.method) && request.body) {
-      init.body = request.body;
+      // 先把请求体完整读出来再转发：浏览器/Node 对流请求体(body 为
+      // ReadableStream)的 fetch 支持不一致——Node(undici) 与 Chrome 都要求
+      // duplex:"half"，否则直接抛错落到 502。缓冲成字节可跨环境零歧义工作。
+      // （上传通常是表单/小数据，缓冲可接受；响应体仍保持流式。）
+      try {
+        init.body = new Uint8Array(await request.arrayBuffer());
+      } catch { /* 读不到请求体则不带 body */ }
     }
 
     const fetched = await fetchWithFallback(gw, url, init);

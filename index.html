@@ -250,18 +250,26 @@
       fetch: (...args) => fetch(...args), // 浏览器原生 fetch，代理到真实网络
       debug: false,
     });
+    try {
+      const machine = await spawnMachine({
+        cmdline: "quiet",
+        devices: [
+          new consoleDevice(stdin, stdout),
+          new entropyDevice(),
+          new ethernetDevice(network)
+        ],
+        initcpio: new Uint8Array(initcpio),
+      });
 
-    const machine = await spawnMachine({
-      cmdline: "quiet",
-      devices: [
-        new consoleDevice(stdin, stdout),
-        new entropyDevice(),
-        new ethernetDevice(network)
-      ],
-      initcpio: new Uint8Array(initcpio),
-    });
-
-    machine.bootConsole.pipeTo(stdout2);
+      machine.bootConsole.pipeTo(stdout2);
+    } catch (err) {
+      if (err instanceof RangeError && err.message.includes('Out of memory')) {
+        navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
+      }
+      term.write("\x1b[31mFailed to spawn machine: " + err.message + "\x1b[0m\n");
+      setStatus("failed", "spawn failed");
+      throw err;
+    }
     setStatus("booted", "ready");
   </script>
 </body>

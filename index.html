@@ -243,7 +243,7 @@
     const network = ethernetNetwork();
     const gateway = fetchInternetGateway(network, {
       gatewayIp: "10.0.2.2",
-      gatewayMac: [0xca, 0xfe, 0xba, 0xbe, 0x07, 0x28],
+      gatewayMac: "ca:fe:ba:be:07:28",
       syntheticIp: "203.0.113.1",
       forceHttps: true, // 客户机用 http 发起时，网关自动升级为 https 去取
       execPort: 20728, // 在网关 IP 上提供 jsexec HTTP 服务(客户机 `jsexec` 命令用)

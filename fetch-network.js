@@ -172,13 +172,9 @@ function makeProxyHandler(gw, scheme, port, opts = {}) {
 
     // 每个请求一个 AbortController，连接断开时取消对应的上游 fetch。
     const ac = new AbortController();
-    let sig = null, onAbort = null;
     if (typeof opts.resolveSignal === "function") {
-      sig = opts.resolveSignal(request);
-      if (sig) {
-        onAbort = () => ac.abort();
-        sig.addEventListener("abort", onAbort, { once: true });
-      }
+      const sig = opts.resolveSignal(request);
+      if (sig) sig.addEventListener("abort", () => ac.abort());
     }
 
     const init = { method: request.method, headers: new Headers(), redirect: "follow", signal: ac.signal };
@@ -189,12 +185,13 @@ function makeProxyHandler(gw, scheme, port, opts = {}) {
       try { init.headers.set(k, v); } catch { }
     }
     if (["POST", "PUT", "PATCH"].includes(request.method) && request.body) {
-      // 流式转发请求体：直接把 request.body(ReadableStream) 作为上游 fetch 的
-      // body，避免把整个请求体缓冲进内存(大文件上传会撑出巨大的 ArrayBuffer)。
-      // 流式请求体必须声明 duplex:"half"(WHATWG fetch 规范，Node/undici 与现代
-      // 浏览器都要求)，否则抛错落到 502。响应体仍保持流式。
-      init.body = request.body;
-      init.duplex = "half";
+      // 先把请求体完整读出来再转发：浏览器/Node 对流请求体(body 为
+      // ReadableStream)的 fetch 支持不一致——Node(undici) 与 Chrome 都要求
+      // duplex:"half"，否则直接抛错落到 502。缓冲成字节可跨环境零歧义工作。
+      // （上传通常是表单/小数据，缓冲可接受；响应体仍保持流式。）
+      try {
+        init.body = new Uint8Array(await request.arrayBuffer());
+      } catch { /* 读不到请求体则不带 body */ }
     }
 
     const fetched = await fetchWithFallback(gw, url, init);

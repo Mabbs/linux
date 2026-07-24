@@ -17,7 +17,7 @@ export function user_module_imports_supported(module) {
  * to reserve that much address space, degrading as far as the initial size.
  */
 export function allocate_shared_memory(initial_pages, preferred_maximum_pages, allocate = (descriptor) => new WebAssembly.Memory(descriptor)) {
-    let maximum_pages = preferred_maximum_pages;
+    let maximum_pages = Math.max(initial_pages, Math.min(preferred_maximum_pages, 4096))
     for (;;) {
         try {
             return {

@@ -205,17 +205,14 @@ function makeProxyHandler(gw, scheme, port, opts = {}) {
       });
     }
     const resp = fetched.resp;
-    // 宿主 fetch 已透明解压，原 content-encoding/length 作废；只保留安全头，
-    // 让 @tcpip/http 重新按 chunked 序列化（busybox wget 支持 chunked）。
-    const keep = new Set([
-      "content-type", "last-modified", "etag", "cache-control",
-      "expires", "server", "date", "location",
+    const drop = new Set([
+      "content-encoding", "content-length", "transfer-encoding", "connection",
     ]);
     const outHeaders = new Headers();
     resp.headers.forEach((v, k) => {
       const lk = k.toLowerCase();
-      if (["content-encoding", "content-length", "transfer-encoding", "connection"].includes(lk)) return;
-      if (keep.has(lk)) outHeaders.set(k, v);
+      if (drop.has(lk)) return;
+      outHeaders.append(k, v);
     });
     return new Response(wrapBodyForAbort(resp.body, ac), {
       status: resp.status,

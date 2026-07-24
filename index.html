@@ -160,7 +160,11 @@
   <script type="module">
     import { FitAddon, Terminal, WebglAddon } from "./vendor/xterm/dist.js";
     import { consoleDevice, entropyDevice, spawnMachine, ethernetDevice, ethernetNetwork } from "./dist/index.js";
-    import { fetchInternetGateway } from "./fetch-network.js";
+    import { fetchInternetGateway, proxyToGuest } from "./fetch-network.js";
+
+    // 反向代理需要的全局状态，提前声明以便下面的 message 监听器(在初始化前就绑定)可访问。
+    let gateway = null;       // fetchInternetGateway 返回的网关实例
+    let gatewayError = null;  // 初始化失败/未跨源隔离等原因，供代理请求回传诊断用
 
     const statusEl = document.getElementById("status");
     const statusText = document.getElementById("status-text");
@@ -204,7 +208,63 @@
     window.onresize = () => termFit.fit();
     try { term.loadAddon(new WebglAddon()); } catch (err) { }
 
+    // ---- 反向代理：浏览器 -> guest 内的 HTTP 服务 ----
+    // service worker(sw.js, 作用域 <目录>/http/)拦截 <目录>/http/<port>/<path> 的请求，
+    // 通过标准 postMessage 把请求发给本页面；本页面用网关的 lwIP 栈去连 guest 真实 IP:<port>，
+    // 把 guest 的响应流式 postMessage 回 SW，再返回给浏览器。
+    // 用标准 postMessage(页面用 getRegistration(scope).active.postMessage 回传)而非 BroadcastChannel
+    // / MessageChannel+port 转移，规避后者在 SW<->页面这一跳不可靠导致页面收不到回音(503 超时)。
+    // 注意：监听器在初始化之前就绑定，这样即便网关初始化失败(如未跨源隔离)，页面也一定会对 SW 的
+    // 请求回一个明确的诊断错误，而不是让 SW 干等 20s 超时。
+    const baseDir = location.pathname.replace(/\/[^/]*$/, "/"); // 例如 "/" 或 "/linux/"
+    const proxyScope = baseDir + "http/";
+    async function postToProxySw(msg) {
+      try {
+        const reg = await navigator.serviceWorker.getRegistration(proxyScope);
+        const sw = reg && (reg.active || reg.waiting);
+        if (sw) sw.postMessage(msg);
+      } catch { }
+    }
+    navigator.serviceWorker.addEventListener("message", async (e) => {
+      const d = e.data;
+      if (!d || d.type !== "guest-proxy") return; // 忽略 coi 等其它 SW 的消息
+      console.log("[proxy] SW -> page:", d.id, d.request && d.request.method, d.request && d.request.port);
+      if (!gateway) {
+        postToProxySw({ type: "guest-proxy-resp", id: d.id, error: gatewayError ? ("gateway error: " + gatewayError) : "gateway not ready (still booting)" });
+        return;
+      }
+      let res;
+      try {
+        res = await proxyToGuest(gateway, d.request);
+      } catch (err) {
+        console.log("[proxy] proxyToGuest threw:", d.id, err && err.message);
+        postToProxySw({ type: "guest-proxy-resp", id: d.id, error: String(err && err.message ? err.message : err) });
+        return;
+      }
+      console.log("[proxy] proxyToGuest ->", d.id, res.error ? ("error " + res.error) : ("status " + res.status + " bytes " + (res.body ? res.body.length : 0)));
+      if (res.error) {
+        postToProxySw({ type: "guest-proxy-resp", id: d.id, error: res.error });
+        return;
+      }
+      // 一次性把完整 body(Uint8Array，已带 Content-Length)随 status 消息回传给 SW。
+      // 不再用分块/结束协议，彻底规避流式 body 未关闭导致的浏览器转圈。
+      postToProxySw({
+        type: "guest-proxy-resp",
+        id: d.id,
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers,
+        body: res.body || new Uint8Array(0),
+      });
+    });
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker
+        .register(baseDir + "sw.js", { scope: proxyScope, updateViaCache: "none" })
+        .catch((err) => console.warn("[sw] register failed:", err && err.message ? err.message : err));
+    }
+
     if (!window.crossOriginIsolated) {
+      gatewayError = "not cross origin isolated";
       term.write("\x1b[31mError: not cross origin isolated\x1b[0m\n");
       setStatus("failed", "error");
       throw new Error("not cross origin isolated");
@@ -240,15 +300,23 @@
     }
 
     const network = ethernetNetwork();
-    const gateway = fetchInternetGateway(network, {
-      gatewayIp: "10.0.2.2",
-      gatewayMac: "ca:fe:ba:be:07:28",
-      syntheticIp: "203.0.113.1",
-      forceHttps: true, // 客户机用 http 发起时，网关自动升级为 https 去取
-      execPort: 20728, // 在网关 IP 上提供 jsexec HTTP 服务(客户机 `jsexec` 命令用)
-      fetch: (...args) => fetch(...args), // 浏览器原生 fetch，代理到真实网络
-      debug: false,
-    });
+    try {
+      gateway = await fetchInternetGateway(network, {
+        gatewayIp: "10.0.2.2",
+        gatewayMac: "ca:fe:ba:be:07:28",
+        syntheticIp: "203.0.113.1",
+        forceHttps: true, // 客户机用 http 发起时，网关自动升级为 https 去取
+        execPort: 20728, // 在网关 IP 上提供 jsexec HTTP 服务(客户机 `jsexec` 命令用)
+        fetch: (...args) => fetch(...args), // 浏览器原生 fetch，代理到真实网络
+        debug: false,
+      });
+    } catch (err) {
+      gatewayError = String(err && err.message ? err.message : err);
+      term.write("\x1b[31mFailed to init gateway: " + gatewayError + "\x1b[0m\n");
+      setStatus("failed", "gateway init failed");
+      throw err;
+    }
+
     try {
       const machine = await spawnMachine({
         cmdline: "quiet",

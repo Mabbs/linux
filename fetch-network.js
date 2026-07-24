@@ -121,10 +121,6 @@ const PROXY_DEBUG = false;
 function pdbg(...a) { if (PROXY_DEBUG) console.log("[proxy]", ...a); }
 const CRLF = new Uint8Array([13, 10]);
 const CRLFCRLF = new Uint8Array([13, 10, 13, 10]);
-// 反向代理 body 读取的超时：无 Content-Length/非 chunked 的歧义响应靠“连接关闭或
-// 2s 空闲”判定结束；整段代理(含连接+读头+读body)硬上限 25s，绝不无限挂起。
-const IDLE_MS_SOFT = 2000;
-const IDLE_MS_HARD = 25000;
 function insertAbortHeader(buf, token) {
   const idx = indexOfBytes(buf, CRLFCRLF);
   if (idx < 0) return buf;
@@ -249,214 +245,109 @@ function makeDnsHandler(gw) {
 
 // ---------------------------------------------------------------------------
 // 反向代理：浏览器 -> 网关 -> guest 内的 HTTP 服务。
-// 用 lwIP 栈直接连 guest 的真实 IP(<guestIp>:<port>)，把 HTTP 请求送进 guest，
-// 再把 guest 的响应流回。返回 { status, statusText, headers:[k,v], body:ReadableStream }
-// 或 { error }。浏览器侧(service worker)负责把结果回传给原请求。
+// 复用 @tcpip/http 的客户端能力(gw._http.fetch)：它内部用 lwIP 栈的 tcp.connect 连
+// guest 真实 IP:<port>，并用内置的 http_parser.wasm 解析响应，返回标准 Response。
+// 我们只需过滤逐跳头、缓冲 body 为定长 Uint8Array(一次性回传，规避流式 done 竞态转圈)。
 // 注意：guest 内的服务需监听在 guest 的可达 IP(或 0.0.0.0)，而不能只绑 127.0.0.1，
 // 否则从网关侧(走 guest 的外部接口)无法抵达。
 // ---------------------------------------------------------------------------
+// Promise 超时包装：ms 内未 settle 则 reject(带 msg)，避免代理永久挂起。
+function withTimeout(promise, ms, msg) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(msg)), ms);
+    Promise.resolve(promise).then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); }
+    );
+  });
+}
+
+// 读取响应体并缓冲为 Uint8Array。idleMs 内无新数据即取消读取(视为 body 结束)，
+// 用于应对 guest 的 keep-alive 连接不关闭导致的 until-close 挂起——本地回环延迟
+// 极低，2s 无新数据即可判定 body 已结束，避免代理无限转圈。
+async function readBody(res, idleMs) {
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  let idleTimer = null;
+  const arm = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { try { reader.cancel(); } catch { } }, idleMs);
+  };
+  arm();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value && value.length) { chunks.push(value); total += value.length; arm(); }
+    }
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
+}
+
+// 反向代理用到的逐跳头(不应透传给 guest / 不应回传给浏览器)。
+const HOP_BY_HOP = ["host", "connection", "content-length", "transfer-encoding",
+  "x-fetch-abort", "keep-alive", "proxy-connection", "upgrade", "proxy-authenticate", "trailer"];
+
 export async function proxyToGuest(gw, req) {
   const guestIp = gw.guestIp || "10.0.2.15";
   const port = req.port;
   if (!gw._stack || !gw._stack.tcp) return { error: "gateway stack not ready" };
-  pdbg("connect ->", guestIp + ":" + port, req.method, req.path);
-  let conn;
-  try {
-    // 关键：connect 必须有超时。guest 内服务没监听该端口时，lwIP 会一直 SYN
-    // 重传、connect 永不 resolve，导致整个代理 Promise 永久 pending、浏览器卡死。
-    conn = await new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("connect to guest " + guestIp + ":" + port + " timed out (8s): guest service not listening/unreachable")), 8000);
-      gw._stack.tcp.connect({ host: guestIp, port }).then(
-        (c) => { clearTimeout(t); resolve(c); },
-        (e) => { clearTimeout(t); reject(e); }
-      );
-    });
-  } catch (e) {
-    return { error: "connect to guest " + guestIp + ":" + port + " failed: " + (e && e.message ? e.message : e) };
-  }
-  pdbg("connected", guestIp + ":" + port);
-  const writer = conn.writable.getWriter();
-  const reader = conn.readable.getReader();
+  if (!gw._http) return { error: "gateway http client not ready" };
+  const method = (req.method || "GET").toUpperCase();
+  const url = "http://" + guestIp + ":" + port + (req.path || "/");
 
-  // 构造 HTTP/1.1 请求（Connection: close，让 guest 响应完即关，便于判定 body 结束）。
-  const reqLines = [
-    req.method + " " + req.path + " HTTP/1.1",
-    "Host: " + guestIp + ":" + port,
-    "Connection: close",
-  ];
+  // 过滤逐跳头；强制 Connection: close 让 guest 响应完即关连接，便于判定 body 结束。
+  const headers = {};
   for (const [k, v] of Object.entries(req.headers || {})) {
-    const lk = ("" + k).toLowerCase();
-    if (["host", "connection", "content-length", "transfer-encoding", "x-fetch-abort"].includes(lk)) continue;
-    reqLines.push(k + ": " + v);
+    if (HOP_BY_HOP.includes(("" + k).toLowerCase())) continue;
+    headers[k] = v;
   }
-  let head = new TextEncoder().encode(reqLines.join("\r\n") + "\r\n\r\n");
-  if (req.body && req.body.length) head = concatBytes(head, req.body);
+  headers["Connection"] = "close";
+
+  pdbg("connect ->", guestIp + ":" + port, method, req.path);
+  const init = { method, headers };
+  if (req.body && req.body.length) init.body = req.body;
+
+  let res;
   try {
-    await writer.write(head);
-    // 半关闭写出侧：通知 guest 请求体已结束（POST 等有 body 时很重要）。
-    try { await writer.close(); } catch { }
+    // 总超时兜底：lwIP 对未监听端口会一直 SYN 重传，createHttp 内部 connect 本身
+    // 无超时；这里保证最坏 10s 必返回(错误而非无限转圈)。
+    res = await withTimeout(
+      gw._http.fetch(url, init),
+      10000,
+      "guest " + guestIp + ":" + port + " http request timed out (10s)"
+    );
   } catch (e) {
-    try { conn.close(); } catch { }
-    return { error: "write request to guest failed: " + (e && e.message ? e.message : e) };
+    return { error: "proxy to guest failed: " + (e && e.message ? e.message : e) };
   }
+  pdbg("response", res.status, res.statusText);
 
-  // 读响应头（带超时：连上了但 guest 迟迟不返回头时，避免永久挂起）
-  const headerDeadline = Date.now() + 8000;
-  const dec = new TextDecoder();
-  let buf = new Uint8Array(0);
-  const readChunk = async () => {
-    const { value, done } = await reader.read();
-    if (done) return false;
-    if (value && value.length) buf = concatBytes(buf, value);
-    return true;
-  };
-  while (indexOfBytes(buf, CRLFCRLF) < 0) {
-    if (Date.now() > headerDeadline) {
-      try { conn.close(); } catch { }
-      return { error: "guest " + guestIp + ":" + port + " connected but sent no HTTP response within 8s" };
-    }
-    if (!(await readChunk())) break;
+  // 用 @tcpip/http 的解析结果，把 body 整体缓冲为 Uint8Array 一次性回传，规避
+  // “流式分块 + 结束协议”在 SW<->页面<->浏览器 三段链路上的 done 竞态转圈。
+  // readBody 带 2s 空闲超时，应对 guest 的 keep-alive 连接不关闭(否则 until-close
+  // 的 body 会无限挂起)；有明确 Content-Length/chunked 时连接正常关则立即结束。
+  let body;
+  try {
+    body = await readBody(res, 2000);
+  } catch (e) {
+    try { res.body && res.body.cancel(); } catch { }
+    return { error: "read guest body failed: " + (e && e.message ? e.message : e) };
   }
-  const he = indexOfBytes(buf, CRLFCRLF);
-  if (he < 0) { try { conn.close(); } catch { } return { error: "no HTTP response from guest" }; }
-  const headerText = dec.decode(buf.subarray(0, he));
-  const lines = headerText.split("\r\n");
-  const statusMatch = /HTTP\/\d\.\d\s+(\d{3})\s*(.*)/.exec(lines[0] || "");
-  const status = statusMatch ? parseInt(statusMatch[1], 10) : 502;
-  const statusText = statusMatch ? statusMatch[2] : "";
-  const headers = [];
-  let bodyLen = -1;
-  for (let i = 1; i < lines.length; i++) {
-    const ci = lines[i].indexOf(":");
-    if (ci < 0) continue;
-    const k = lines[i].slice(0, ci).trim();
-    const v = lines[i].slice(ci + 1).trim();
-    const lk = k.toLowerCase();
-    // 去除逐跳头；保留 content-length / transfer-encoding，让浏览器按原样解析。
-    if (["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "trailer", "upgrade"].includes(lk)) continue;
-    if (lk === "content-length") bodyLen = parseInt(v, 10);
-    headers.push([k, v]);
-  }
-
-  // 把 guest 响应体读全(缓冲)，统一以 Content-Length 回传。这样浏览器能明确知道
-  // body 何时结束，彻底规避“无 Content-Length、非 chunked、keep-alive 连接不关闭”
-  // 导致的无限转圈。三种结束条件：
-  //   - 有 Content-Length：读满 bodyLen 字节；
-  //   - chunked：解码到 0 长度末块；
-  //   - 都没有：读到连接关闭(done)或 2s 空闲超时(srcCtrl.close 触发 done)为止。
-  let chunked = false;
-  for (const [k, v] of headers) {
-    if (("" + k).toLowerCase() === "transfer-encoding" && /chunked/i.test(v)) chunked = true;
-  }
-  pdbg("response", status, "len=" + bodyLen, "chunked=" + chunked);
-
-  // 用受控流包裹 guest 可读端：保证空闲/强制关闭时我们的读取能结束（直接读
-  // conn.readable 在部分实现下 conn.close() 不一定让 read() 返回 done）。
-  let srcCtrl = null;
-  const src = new ReadableStream({
-    start(c) { srcCtrl = c; },
-    async pull(c) {
-      const { value, done } = await reader.read();
-      if (done) { try { c.close(); } catch { } return; }
-      if (value && value.length) { try { c.enqueue(value); } catch { } }
-    },
-    cancel() { try { conn.close(); } catch { } },
-  });
-  const sreader = src.getReader();
 
   const outHeaders = [];
-  let fullBody = new Uint8Array(0);
-
-  if (bodyLen >= 0) {
-    let acc = buf.subarray(he + 4);
-    while (acc.length < bodyLen) {
-      const { value, done } = await sreader.read();
-      if (done) break;
-      if (value && value.length) acc = concatBytes(acc, value);
-    }
-    fullBody = acc.length > bodyLen ? acc.subarray(0, bodyLen) : acc;
-    for (const [k, v] of headers) {
-      const lk = ("" + k).toLowerCase();
-      if (lk === "transfer-encoding" || lk === "content-length") continue; // 用我们算出的
-      outHeaders.push([k, v]);
-    }
-  } else if (chunked) {
-    let cbuf = buf.subarray(he + 4);
-    const parts = []; let total = 0; let eof = false;
-    while (true) {
-      const nl = indexOfBytes(cbuf, CRLF);
-      if (nl < 0) {
-        if (eof) break;
-        const { value, done } = await sreader.read();
-        if (done) { eof = true; continue; }
-        if (value && value.length) cbuf = concatBytes(cbuf, value);
-        continue;
-      }
-      const sizeLine = dec.decode(cbuf.subarray(0, nl)).trim();
-      const size = parseInt(sizeLine.split(";")[0], 16);
-      if (isNaN(size)) { try { conn.close(); } catch { } return { error: "bad chunk size from guest" }; }
-      if (size === 0) break;
-      const need = nl + 2 + size + 2;
-      if (cbuf.length < need) {
-        if (eof) { try { conn.close(); } catch { } return { error: "truncated chunked body from guest" }; }
-        const { value, done } = await sreader.read();
-        if (done) { eof = true; continue; }
-        if (value && value.length) cbuf = concatBytes(cbuf, value);
-        continue;
-      }
-      const piece = cbuf.subarray(nl + 2, nl + 2 + size);
-      parts.push(piece); total += piece.length;
-      cbuf = cbuf.subarray(need);
-    }
-    fullBody = new Uint8Array(total);
-    let off = 0; for (const p of parts) { fullBody.set(p, off); off += p.length; }
-    for (const [k, v] of headers) {
-      const lk = ("" + k).toLowerCase();
-      if (lk === "transfer-encoding" || lk === "content-length") continue;
-      outHeaders.push([k, v]);
-    }
-  } else {
-    // 无长度且非 chunked：靠连接关闭或 2s 空闲超时判定结束
-    const start = Date.now();
-    let acc = buf.subarray(he + 4);
-    let idleTimer = setTimeout(() => {
-      pdbg("body idle timeout -> close", guestIp + ":" + port);
-      try { srcCtrl && srcCtrl.close(); } catch { }
-      try { conn.close(); } catch { }
-    }, IDLE_MS_SOFT);
-    const hardTimer = setTimeout(() => {
-      pdbg("overall timeout -> force close", guestIp + ":" + port);
-      try { srcCtrl && srcCtrl.close(); } catch { }
-      try { conn.close(); } catch { }
-    }, IDLE_MS_HARD);
-    while (true) {
-      const { value, done } = await sreader.read();
-      if (done) break;
-      if (value && value.length) {
-        acc = concatBytes(acc, value);
-        clearTimeout(idleTimer);
-        if (Date.now() - start > IDLE_MS_HARD) break;
-        idleTimer = setTimeout(() => {
-          pdbg("body idle timeout -> close", guestIp + ":" + port);
-          try { srcCtrl && srcCtrl.close(); } catch { }
-          try { conn.close(); } catch { }
-        }, IDLE_MS_SOFT);
-      }
-    }
-    clearTimeout(idleTimer); clearTimeout(hardTimer);
-    fullBody = acc;
-    for (const [k, v] of headers) {
-      const lk = ("" + k).toLowerCase();
-      if (lk === "transfer-encoding" || lk === "content-length") continue;
-      outHeaders.push([k, v]);
-    }
-  }
-
-  pdbg("body complete", status, fullBody.length, "bytes");
-  // 统一补 Content-Length，让浏览器明确知道 body 何时结束。
-  outHeaders.push(["Content-Length", String(fullBody.length)]);
-  try { conn.close(); } catch { }
-  return { status, statusText, headers: outHeaders, body: fullBody };
+  res.headers.forEach((v, k) => {
+    if (HOP_BY_HOP.includes(("" + k).toLowerCase())) return;
+    outHeaders.push([k, v]);
+  });
+  outHeaders.push(["Content-Length", String(body.length)]); // 定长回传，浏览器明确知道何时结束
+  pdbg("body complete", res.status, body.length, "bytes");
+  return { status: res.status, statusText: res.statusText, headers: outHeaders, body };
 }
 
 // ---------------------------------------------------------------------------
@@ -669,6 +560,7 @@ export async function fetchInternetGateway(network, options = {}) {
 
   // --- HTTP 服务(@tcpip/http) ---
   const http = await createHttp(stack.tcp);
+  gw._http = http; // 反向代理(proxyToGuest)复用同一实例的 .fetch 客户端能力
   // 80：明文代理（forceHttps 时升级 https）；回环 https：供 443 经 forge 解密后转发
   const proxyServer = await http.serve({ port: 80 }, makeProxyHandler(gw, gw.forceHttps ? "https" : "http", 80));
   const execServer = await http.serve({ host: gw.gatewayIp, port: gw.execPort }, execHandler);

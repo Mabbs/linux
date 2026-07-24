@@ -40,7 +40,8 @@ const resources = (async () => {
     };
 })();
 const PAGE_SIZE = 0x10000;
-const KERNEL_MEMORY_MAXIMUM_PAGES = 0xfff;
+// Leave the final wasm32 page out so the physical-memory size fits in u32.
+const KERNEL_MEMORY_MAXIMUM_PAGES = 0xffff;
 function kernel_initial_pages(memory, initcpio_size) {
     const maximum = BigInt(KERNEL_MEMORY_MAXIMUM_PAGES);
     assert(memory.minimum <= maximum &&

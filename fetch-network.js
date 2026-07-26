@@ -232,11 +232,93 @@ async function execHandler(request) {
   });
 }
 
-// 合成 DNS：一切 A 查询回合成 IP，其余类型(NOERROR 无答案)。
+// DoH 解析服务：用于 A / AAAA 以外的 DNS 记录类型。
+const DOH_RESOLVE = "https://dns.mayx.eu.org/resolve";
+
+// 把 DoH 返回的一条记录（data 为 zone-file 表示法）转成 @tcpip/dns 的
+// request 处理器期望的应答对象，由 vendor/tcpip-dns 的 W() 编码成 wire 格式。
+// 未知的 type 返回 null，调用方会跳过它（保证 NOERROR 兜底）。
+function dohRecordToAnswer(rec) {
+  const ttl = rec.TTL != null ? rec.TTL : 60;
+  const data = rec.data != null ? String(rec.data) : "";
+  switch (rec.type) {
+    case 16: // TXT
+      return { type: "TXT", ttl, value: data };
+    case 12: // PTR
+      return { type: "PTR", ttl, ptr: data.replace(/\.$/, "") };
+    case 5: // CNAME
+      return { type: "CNAME", ttl, cname: data.replace(/\.$/, "") };
+    case 2: // NS
+      return { type: "NS", ttl, ns: data.replace(/\.$/, "") };
+    case 15: { // MX：data = "<优先级> <交换器>"
+      const sp = data.indexOf(" ");
+      const pri = sp < 0 ? 10 : (parseInt(data.slice(0, sp), 10) || 0);
+      const exchange = (sp < 0 ? data : data.slice(sp + 1)).replace(/\.$/, "");
+      return { type: "MX", ttl, priority: pri, exchange };
+    }
+    case 6: { // SOA：mname rname serial refresh retry expire minimum
+      const f = data.split(/\s+/);
+      return {
+        type: "SOA", ttl,
+        mname: (f[0] || "").replace(/\.$/, ""),
+        rname: (f[1] || "").replace(/\.$/, ""),
+        serial: parseInt(f[2], 10) || 0,
+        refresh: parseInt(f[3], 10) || 0,
+        retry: parseInt(f[4], 10) || 0,
+        expire: parseInt(f[5], 10) || 0,
+        minimum: parseInt(f[6], 10) || 0,
+      };
+    }
+    case 33: { // SRV：priority weight port target
+      const f = data.split(/\s+/);
+      return {
+        type: "SRV", ttl,
+        priority: parseInt(f[0], 10) || 0,
+        weight: parseInt(f[1], 10) || 0,
+        port: parseInt(f[2], 10) || 0,
+        target: (f[3] || "").replace(/\.$/, ""),
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+// 经 DoH 解析指定域名/类型，返回应答对象数组（交给 @tcpip/dns 编码）。
+// Status 0 且有记录则正常返回；Status 3 视为 NXDOMAIN（返回 undefined）；
+// 其它非 0 或请求异常则 NOERROR 无答案（返回 []），避免客户机卡死。
+async function resolveViaDoh(name, type) {
+  const url = `${DOH_RESOLVE}?name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}`;
+  const resp = await fetch(url, { headers: { accept: "application/dns-json" } });
+  if (!resp.ok) return [];
+  const json = await resp.json();
+  if (json.Status === 3) return; // NXDOMAIN
+  if (json.Status !== 0) return [];
+  const answers = [];
+  for (const sec of [json.Answer, json.Authority, json.Additional]) {
+    if (!Array.isArray(sec)) continue;
+    for (const rec of sec) {
+      const a = dohRecordToAnswer(rec);
+      if (a) answers.push(a);
+    }
+  }
+  return answers;
+}
+
+// DNS 处理器：
+//   - A  ：保持原有合成逻辑，回合成 IP（gw.syntheticIp）。
+//   - AAAA：保持原有逻辑，NOERROR 无答案，客户机回退到 A。
+//   - 其它（CNAME/MX/TXT/NS/SOA/SRV/PTR…）：经 DoH 取真实解析结果返回。
 function makeDnsHandler(gw) {
-  return async ({ type }) => {
+  return async ({ name, type }) => {
     if (type === "A") return { type: "A", ttl: 60, ip: gw.syntheticIp };
-    return []; // NOERROR 无答案（如 AAAA），客户机回退到 A
+    if (type === "AAAA") return []; // NOERROR 无答案，客户机回退到 A
+    try {
+      return await resolveViaDoh(name, type);
+    } catch (e) {
+      if (gw.debug) console.log("[fetch-gw] DoH resolve failed:", e && e.message ? e.message : e);
+      return []; // 解析异常时 NOERROR 无答案，避免客户机卡死
+    }
   };
 }
 

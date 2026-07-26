@@ -227,6 +227,36 @@ function W(e) {
       return Y(e.value);
     case "PTR":
       return C(e.ptr);
+    case "CNAME":
+      return C(("" + e.cname).replace(/\.$/, ""));
+    case "NS":
+      return C(("" + e.ns).replace(/\.$/, ""));
+    case "MX": {
+      let r = C(("" + e.exchange).replace(/\.$/, "")), o = new Uint8Array(2 + r.length), n = new DataView(o.buffer);
+      n.setUint16(0, (e.priority | 0) & 65535);
+      o.set(r, 2);
+      return o;
+    }
+    case "SOA": {
+      let m = C(("" + e.mname).replace(/\.$/, "")), r = C(("" + e.rname).replace(/\.$/, "")), o = new Uint8Array(m.length + r.length + 20), n = new DataView(o.buffer);
+      o.set(m, 0);
+      o.set(r, m.length);
+      let i = m.length + r.length;
+      n.setUint32(i, e.serial >>> 0); i += 4;
+      n.setUint32(i, e.refresh >>> 0); i += 4;
+      n.setUint32(i, e.retry >>> 0); i += 4;
+      n.setUint32(i, e.expire >>> 0); i += 4;
+      n.setUint32(i, e.minimum >>> 0);
+      return o;
+    }
+    case "SRV": {
+      let t = C(("" + e.target).replace(/\.$/, "")), o = new Uint8Array(6 + t.length), n = new DataView(o.buffer);
+      n.setUint16(0, (e.priority | 0) & 65535);
+      n.setUint16(2, (e.weight | 0) & 65535);
+      n.setUint16(4, (e.port | 0) & 65535);
+      o.set(t, 6);
+      return o;
+    }
     default:
       throw new Error("unsupported record type");
   }

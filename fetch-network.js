@@ -233,27 +233,37 @@ async function execHandler(request) {
 // DNS 服务
 //   A  ：保持原有合成逻辑，回合成 IP（gw.syntheticIp）。
 //   AAAA：保持原有逻辑，NOERROR 无答案，客户机回退到 A。
-//   其它类型：把整段 DNS 查询报文（UDP 负载）按 RFC 8484 的 DoH wire 规则
-//   发给 DoH 服务器（https://dns.mayx.eu.org/dns-query?dns=<base64url>），
-//   再把 DoH 返回的 DNS wire 报文原样转发回客户机。
+//   其它类型：把整段 DNS 查询报文按 RFC 8484 规则经 DoH wire 端点转发。
 // ---------------------------------------------------------------------------
 
-// 解析 DNS 查询首条 question 的 type 数值（1=A, 28=AAAA, 5=CNAME…）。
-// 跳过 name 标签序列到 0x00，随后 2 字节 type + 2 字节 class。
-function dnsQuestionType(data) {
-  if (!data || data.length < 12) return null;
+// 1. 准确获取 Question 段在 DNS 报文中的结束位置 (Header 12B + QNAME + QTYPE 2B + QCLASS 2B)
+function getQuestionEndOffset(data) {
+  if (!data || data.length < 12) return -1;
   let off = 12;
   while (off < data.length) {
     const len = data[off];
     if (len === 0) { off += 1; break; }
-    if ((len & 0xc0) === 0xc0) { off += 2; break; } // 压缩指针（查询里不应出现）
+    if ((len & 0xc0) === 0xc0) { off += 2; break; } // 指针
     off += len + 1;
   }
-  if (off + 4 > data.length) return null;
-  return (data[off] << 8) | data[off + 1];
+  if (off + 4 > data.length) return -1;
+  return off + 4; // 指向 Question 结尾后的偏移量
 }
 
-// Uint8Array -> base64url（浏览器/Node 通用的 btoa）。
+// 解析 DNS 查询首条 question 的 type 数值（1=A, 28=AAAA, 5=CNAME…）
+function dnsQuestionType(data) {
+  const end = getQuestionEndOffset(data);
+  if (end === -1) return null;
+  return (data[end - 4] << 8) | data[end - 3];
+}
+
+// 仅提取纯粹的 Question 字节段（过滤掉末尾可能的 EDNS0/OPT 附加数据，防止构建应答时报文结构破坏）
+function extractQuestionSection(query) {
+  const end = getQuestionEndOffset(query);
+  return end > 12 ? query.subarray(12, end) : new Uint8Array(0);
+}
+
+// Uint8Array -> base64url（浏览器/Node 通用的 btoa）
 function bytesToBase64url(bytes) {
   let bin = "";
   const CHUNK = 0x8000;
@@ -263,19 +273,18 @@ function bytesToBase64url(bytes) {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-// 把 DNS wire 查询直接发给 DoH wire 端点，返回 DoH 的 DNS wire 响应；失败返回 null。
-// 加 AbortController 超时，避免 DoH 无响应时单个查询永久挂起、占用处理任务。
+// 把 DNS wire 查询发给 DoH 端点（改用 fetchWithFallback 以支持 CORS Proxy 与代理能力）
 async function forwardViaDoh(gw, queryBytes) {
   const url = `${gw.dohWire}?dns=${bytesToBase64url(queryBytes)}`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 8000);
   try {
-    const resp = await fetch(url, {
+    const fetched = await fetchWithFallback(gw, url, {
       headers: { accept: "application/dns-message" },
       signal: ctrl.signal,
     });
-    if (!resp.ok) return null;
-    const buf = await resp.arrayBuffer();
+    if (!fetched.resp || !fetched.resp.ok) return null;
+    const buf = await fetched.resp.arrayBuffer();
     return new Uint8Array(buf);
   } catch {
     return null; // 超时 / 网络异常：交由上层回 SERVFAIL
@@ -284,7 +293,7 @@ async function forwardViaDoh(gw, queryBytes) {
   }
 }
 
-// 构造 DNS 响应头：复制事务 ID，QR=1/RD=1/RA=1，指定 rcode。
+// 构造 DNS 响应头：复制事务 ID，QR=1/RD=1/RA=1，指定 rcode
 function buildDnsHeader(query, an, rcode) {
   const hdr = new Uint8Array(12);
   hdr.set(query.subarray(0, 2), 0);
@@ -295,10 +304,10 @@ function buildDnsHeader(query, an, rcode) {
   return hdr;
 }
 
-// A：合成应答（name 用 0x0c 压缩指针指向 question）。
+// A：合成应答（使用 extractQuestionSection 安全截取，抛弃 EDNS0 杂项）
 function buildSyntheticA(gw, query) {
   const hdr = buildDnsHeader(query, 1, 0);
-  const question = query.subarray(12);
+  const question = extractQuestionSection(query);
   const ip = gw.syntheticIp.split(".").map((n) => Number(n) & 0xff);
   const rr = new Uint8Array(12 + 4);
   const dv = new DataView(rr.buffer);
@@ -315,27 +324,27 @@ function buildSyntheticA(gw, query) {
   return out;
 }
 
-// AAAA / 无答案：NOERROR 空应答（仅回显 question）。
+// AAAA / 无答案：NOERROR 空应答
 function buildEmpty(gw, query) {
   const hdr = buildDnsHeader(query, 0, 0);
-  const question = query.subarray(12);
+  const question = extractQuestionSection(query);
   const out = new Uint8Array(hdr.length + question.length);
   out.set(hdr, 0);
   out.set(question, hdr.length);
   return out;
 }
 
-// 服务端或转发失败时回 SERVFAIL，避免客户机无限等待。
+// 服务端或转发失败时回 SERVFAIL
 function buildServfail(gw, query) {
   const hdr = buildDnsHeader(query, 0, 2);
-  const question = query.subarray(12);
+  const question = extractQuestionSection(query);
   const out = new Uint8Array(hdr.length + question.length);
   out.set(hdr, 0);
   out.set(question, hdr.length);
   return out;
 }
 
-// 处理单条 DNS 查询，返回要发回客户机的 wire 报文（null 表示不回）。
+// 处理单条 DNS 查询
 async function handleDnsQuery(gw, query) {
   const qtype = dnsQuestionType(query);
   if (qtype === 1) return buildSyntheticA(gw, query);   // A：合成 IP
@@ -349,17 +358,14 @@ async function handleDnsQuery(gw, query) {
   }
 }
 
-// 复用 @tcpip 的 ReadableStream -> async iterable 适配器（与 vendor/tcpip-dns 内部一致）。
-// 关键：stack.udp 的 socket.readable 是标准 ReadableStream，它本身没有
-// [Symbol.asyncIterator]，不能直接 `for await (... of socket.readable)`（会抛
-// "undefined is not a function"），必须先 getReader() 再用 async generator 包装。
+// 复用 @tcpip 的 ReadableStream -> async iterable 适配器
 function c(e, r) {
   let a = e.getReader();
   return m(a, r);
 }
 async function* m(e, r) {
   try {
-    for (; ; ) {
+    for (; ;) {
       let { done: a, value: n } = await e.read();
       if (a) return n;
       yield n;
@@ -369,17 +375,24 @@ async function* m(e, r) {
   }
 }
 
-// 在 UDP 上起 DNS 服务：A/AAAA 本地合成，其余类型直接经 DoH wire 转发。
+// 在 UDP 上起 DNS 服务（使用写入链 Promise 队列，防止并发 write 导致 Stream 报错崩溃）
 function startDnsServer(gw, stack) {
   let socket = null;
   (async () => {
     try {
       socket = await stack.udp.open({ host: gw.gatewayIp, port: gw.dnsPort });
       const writer = socket.writable.getWriter();
+
+      // 串行写入队列，避免并发 write 触发 TypeError: Stream locked/busy
+      let writeChain = Promise.resolve();
+      const safeWrite = (pkt) => {
+        writeChain = writeChain.then(() => writer.write(pkt)).catch(() => { });
+      };
+
       for await (const pkt of c(socket.readable)) {
         const { host, port, data } = pkt;
         handleDnsQuery(gw, data)
-          .then((resp) => { if (resp) return writer.write({ host, port, data: resp }); })
+          .then((resp) => { if (resp) safeWrite({ host, port, data: resp }); })
           .catch((e) => { if (gw.debug) console.log("[fetch-gw] dns query err:", e && e.message ? e.message : e); });
       }
     } catch (e) {

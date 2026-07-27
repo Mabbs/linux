@@ -266,12 +266,24 @@ function bytesToBase64url(bytes) {
 }
 
 // 把 DNS wire 查询直接发给 DoH wire 端点，返回 DoH 的 DNS wire 响应；失败返回 null。
+// 加 AbortController 超时，避免 DoH 无响应时单个查询永久挂起、占用处理任务。
 async function forwardViaDoh(gw, queryBytes) {
   const url = `${gw.dohWire}?dns=${bytesToBase64url(queryBytes)}`;
-  const resp = await fetch(url, { headers: { accept: "application/dns-message" } });
-  if (!resp.ok) return null;
-  const buf = await resp.arrayBuffer();
-  return new Uint8Array(buf);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const resp = await fetch(url, {
+      headers: { accept: "application/dns-message" },
+      signal: ctrl.signal,
+    });
+    if (!resp.ok) return null;
+    const buf = await resp.arrayBuffer();
+    return new Uint8Array(buf);
+  } catch {
+    return null; // 超时 / 网络异常：交由上层回 SERVFAIL
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // 构造 DNS 响应头：复制事务 ID，QR=1/RD=1/RA=1，指定 rcode。
@@ -348,12 +360,9 @@ function startDnsServer(gw, stack) {
       const writer = socket.writable.getWriter();
       for await (const pkt of socket.readable) {
         const { host, port, data } = pkt;
-        try {
-          const resp = await handleDnsQuery(gw, data);
-          if (resp) await writer.write({ host, port, data: resp });
-        } catch (e) {
-          if (gw.debug) console.log("[fetch-gw] dns query err:", e && e.message ? e.message : e);
-        }
+        handleDnsQuery(gw, data)
+          .then((resp) => { if (resp) return writer.write({ host, port, data: resp }); })
+          .catch((e) => { if (gw.debug) console.log("[fetch-gw] dns query err:", e && e.message ? e.message : e); });
       }
     } catch (e) {
       if (gw.debug) console.log("[fetch-gw] dns server ended:", e && e.message ? e.message : e);

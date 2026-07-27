@@ -8,7 +8,6 @@
 import { createStack } from "./vendor/tcpip/dist/index.js";
 import { forge } from "./vendor/forge/forge.js";
 import { createHttp } from "./vendor/tcpip-http/dist/index.js";
-import { createDns } from "./vendor/tcpip-dns/index.js";
 
 function macToString(mac) {
   if (typeof mac === "string") return mac;
@@ -232,93 +231,138 @@ async function execHandler(request) {
   });
 }
 
-// DoH 解析服务：用于 A / AAAA 以外的 DNS 记录类型。
-const DOH_RESOLVE = "https://dns.mayx.eu.org/resolve";
+// ---------------------------------------------------------------------------
+// DNS 服务
+//   A  ：保持原有合成逻辑，回合成 IP（gw.syntheticIp）。
+//   AAAA：保持原有逻辑，NOERROR 无答案，客户机回退到 A。
+//   其它类型：把整段 DNS 查询报文（UDP 负载）按 RFC 8484 的 DoH wire 规则
+//   发给 DoH 服务器（https://dns.mayx.eu.org/dns-query?dns=<base64url>），
+//   再把 DoH 返回的 DNS wire 报文原样转发回客户机。
+// ---------------------------------------------------------------------------
 
-// 把 DoH 返回的一条记录（data 为 zone-file 表示法）转成 @tcpip/dns 的
-// request 处理器期望的应答对象，由 vendor/tcpip-dns 的 W() 编码成 wire 格式。
-// 未知的 type 返回 null，调用方会跳过它（保证 NOERROR 兜底）。
-function dohRecordToAnswer(rec) {
-  const ttl = rec.TTL != null ? rec.TTL : 60;
-  const data = rec.data != null ? String(rec.data) : "";
-  switch (rec.type) {
-    case 16: // TXT
-      return { type: "TXT", ttl, value: data };
-    case 12: // PTR
-      return { type: "PTR", ttl, ptr: data.replace(/\.$/, "") };
-    case 5: // CNAME
-      return { type: "CNAME", ttl, cname: data.replace(/\.$/, "") };
-    case 2: // NS
-      return { type: "NS", ttl, ns: data.replace(/\.$/, "") };
-    case 15: { // MX：data = "<优先级> <交换器>"
-      const sp = data.indexOf(" ");
-      const pri = sp < 0 ? 10 : (parseInt(data.slice(0, sp), 10) || 0);
-      const exchange = (sp < 0 ? data : data.slice(sp + 1)).replace(/\.$/, "");
-      return { type: "MX", ttl, priority: pri, exchange };
-    }
-    case 6: { // SOA：mname rname serial refresh retry expire minimum
-      const f = data.split(/\s+/);
-      return {
-        type: "SOA", ttl,
-        mname: (f[0] || "").replace(/\.$/, ""),
-        rname: (f[1] || "").replace(/\.$/, ""),
-        serial: parseInt(f[2], 10) || 0,
-        refresh: parseInt(f[3], 10) || 0,
-        retry: parseInt(f[4], 10) || 0,
-        expire: parseInt(f[5], 10) || 0,
-        minimum: parseInt(f[6], 10) || 0,
-      };
-    }
-    case 33: { // SRV：priority weight port target
-      const f = data.split(/\s+/);
-      return {
-        type: "SRV", ttl,
-        priority: parseInt(f[0], 10) || 0,
-        weight: parseInt(f[1], 10) || 0,
-        port: parseInt(f[2], 10) || 0,
-        target: (f[3] || "").replace(/\.$/, ""),
-      };
-    }
-    default:
-      return null;
+// 解析 DNS 查询首条 question 的 type 数值（1=A, 28=AAAA, 5=CNAME…）。
+// 跳过 name 标签序列到 0x00，随后 2 字节 type + 2 字节 class。
+function dnsQuestionType(data) {
+  if (!data || data.length < 12) return null;
+  let off = 12;
+  while (off < data.length) {
+    const len = data[off];
+    if (len === 0) { off += 1; break; }
+    if ((len & 0xc0) === 0xc0) { off += 2; break; } // 压缩指针（查询里不应出现）
+    off += len + 1;
+  }
+  if (off + 4 > data.length) return null;
+  return (data[off] << 8) | data[off + 1];
+}
+
+// Uint8Array -> base64url（浏览器/Node 通用的 btoa）。
+function bytesToBase64url(bytes) {
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// 把 DNS wire 查询直接发给 DoH wire 端点，返回 DoH 的 DNS wire 响应；失败返回 null。
+async function forwardViaDoh(gw, queryBytes) {
+  const url = `${gw.dohWire}?dns=${bytesToBase64url(queryBytes)}`;
+  const resp = await fetch(url, { headers: { accept: "application/dns-message" } });
+  if (!resp.ok) return null;
+  const buf = await resp.arrayBuffer();
+  return new Uint8Array(buf);
+}
+
+// 构造 DNS 响应头：复制事务 ID，QR=1/RD=1/RA=1，指定 rcode。
+function buildDnsHeader(query, an, rcode) {
+  const hdr = new Uint8Array(12);
+  hdr.set(query.subarray(0, 2), 0);
+  const dv = new DataView(hdr.buffer);
+  dv.setUint16(2, 0x8180 | (rcode & 0x0f)); // QR=1, RD=1, RA=1
+  dv.setUint16(4, 1); // question count
+  dv.setUint16(6, an); // answer count
+  return hdr;
+}
+
+// A：合成应答（name 用 0x0c 压缩指针指向 question）。
+function buildSyntheticA(gw, query) {
+  const hdr = buildDnsHeader(query, 1, 0);
+  const question = query.subarray(12);
+  const ip = gw.syntheticIp.split(".").map((n) => Number(n) & 0xff);
+  const rr = new Uint8Array(12 + 4);
+  const dv = new DataView(rr.buffer);
+  rr[0] = 0xc0; rr[1] = 0x0c; // name 压缩指针 -> offset 12
+  dv.setUint16(2, 1);         // type A
+  dv.setUint16(4, 1);         // class IN
+  dv.setUint32(6, 60);        // TTL
+  dv.setUint16(10, 4);        // RDLENGTH
+  rr.set(ip, 12);             // RDATA = IPv4
+  const out = new Uint8Array(hdr.length + question.length + rr.length);
+  out.set(hdr, 0);
+  out.set(question, hdr.length);
+  out.set(rr, hdr.length + question.length);
+  return out;
+}
+
+// AAAA / 无答案：NOERROR 空应答（仅回显 question）。
+function buildEmpty(gw, query) {
+  const hdr = buildDnsHeader(query, 0, 0);
+  const question = query.subarray(12);
+  const out = new Uint8Array(hdr.length + question.length);
+  out.set(hdr, 0);
+  out.set(question, hdr.length);
+  return out;
+}
+
+// 服务端或转发失败时回 SERVFAIL，避免客户机无限等待。
+function buildServfail(gw, query) {
+  const hdr = buildDnsHeader(query, 0, 2);
+  const question = query.subarray(12);
+  const out = new Uint8Array(hdr.length + question.length);
+  out.set(hdr, 0);
+  out.set(question, hdr.length);
+  return out;
+}
+
+// 处理单条 DNS 查询，返回要发回客户机的 wire 报文（null 表示不回）。
+async function handleDnsQuery(gw, query) {
+  const qtype = dnsQuestionType(query);
+  if (qtype === 1) return buildSyntheticA(gw, query);   // A：合成 IP
+  if (qtype === 28) return buildEmpty(gw, query);        // AAAA：NOERROR 空
+  if (qtype === null) return buildServfail(gw, query);   // 报文畸形
+  try {
+    return (await forwardViaDoh(gw, query)) || buildServfail(gw, query);
+  } catch (e) {
+    if (gw.debug) console.log("[fetch-gw] DoH forward failed:", e && e.message ? e.message : e);
+    return buildServfail(gw, query);
   }
 }
 
-// 经 DoH 解析指定域名/类型，返回应答对象数组（交给 @tcpip/dns 编码）。
-// Status 0 且有记录则正常返回；Status 3 视为 NXDOMAIN（返回 undefined）；
-// 其它非 0 或请求异常则 NOERROR 无答案（返回 []），避免客户机卡死。
-async function resolveViaDoh(name, type) {
-  const url = `${DOH_RESOLVE}?name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}`;
-  const resp = await fetch(url, { headers: { accept: "application/dns-json" } });
-  if (!resp.ok) return [];
-  const json = await resp.json();
-  if (json.Status === 3) return; // NXDOMAIN
-  if (json.Status !== 0) return [];
-  const answers = [];
-  for (const sec of [json.Answer, json.Authority, json.Additional]) {
-    if (!Array.isArray(sec)) continue;
-    for (const rec of sec) {
-      const a = dohRecordToAnswer(rec);
-      if (a) answers.push(a);
-    }
-  }
-  return answers;
-}
-
-// DNS 处理器：
-//   - A  ：保持原有合成逻辑，回合成 IP（gw.syntheticIp）。
-//   - AAAA：保持原有逻辑，NOERROR 无答案，客户机回退到 A。
-//   - 其它（CNAME/MX/TXT/NS/SOA/SRV/PTR…）：经 DoH 取真实解析结果返回。
-function makeDnsHandler(gw) {
-  return async ({ name, type }) => {
-    if (type === "A") return { type: "A", ttl: 60, ip: gw.syntheticIp };
-    if (type === "AAAA") return []; // NOERROR 无答案，客户机回退到 A
+// 在 UDP 上起 DNS 服务：A/AAAA 本地合成，其余类型直接经 DoH wire 转发。
+function startDnsServer(gw, stack) {
+  let socket = null;
+  (async () => {
     try {
-      return await resolveViaDoh(name, type);
+      socket = await stack.udp.open({ host: gw.gatewayIp, port: gw.dnsPort });
+      const writer = socket.writable.getWriter();
+      for await (const pkt of socket.readable) {
+        const { host, port, data } = pkt;
+        try {
+          const resp = await handleDnsQuery(gw, data);
+          if (resp) await writer.write({ host, port, data: resp });
+        } catch (e) {
+          if (gw.debug) console.log("[fetch-gw] dns query err:", e && e.message ? e.message : e);
+        }
+      }
     } catch (e) {
-      if (gw.debug) console.log("[fetch-gw] DoH resolve failed:", e && e.message ? e.message : e);
-      return []; // 解析异常时 NOERROR 无答案，避免客户机卡死
+      if (gw.debug) console.log("[fetch-gw] dns server ended:", e && e.message ? e.message : e);
     }
+  })();
+  return {
+    close() {
+      try { if (socket && socket.close) socket.close(); } catch { }
+    },
   };
 }
 
@@ -578,6 +622,7 @@ export async function fetchInternetGateway(network, options = {}) {
     tlsLocalPort: options.tlsLocalPort || 8443,
     forceHttps: options.forceHttps !== false,
     corsProxy: options.corsProxy !== undefined ? options.corsProxy : "https://cors-anywhere.mayx.eu.org/?",
+    dohWire: options.dohWire || "https://dns.mayx.eu.org/dns-query",
     fetch: options.fetch || fetch,
     tlsCert: tlsPair.cert,
     tlsKey: tlsPair.key,
@@ -656,13 +701,8 @@ export async function fetchInternetGateway(network, options = {}) {
   const tlsListener = await stack.tcp.listen({ port: 443 });
   acceptLoop(gw, tlsListener, (conn) => serveTlsConn(gw, conn, stack));
 
-  // --- DNS 服务(@tcpip/dns) ---
-  const dns = await createDns(stack.udp);
-  const dnsServer = await dns.serve({
-    host: gw.gatewayIp,
-    port: gw.dnsPort,
-    request: makeDnsHandler(gw),
-  });
+  // --- DNS 服务 ---
+  const dnsServer = startDnsServer(gw, stack);
 
   // 注意：必须返回完整的 gw 对象(而非只返回 {close})，因为 proxyToGuest 由页面经 service
   // worker 桥接「外部」调用，依赖 gw._stack / gw.guestIp / gw._abortMap 等字段。若只返回

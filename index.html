@@ -309,7 +309,7 @@
         forceHttps: true, // 客户机用 http 发起时，网关自动升级为 https 去取
         execPort: 20728, // 在网关 IP 上提供 jsexec HTTP 服务(客户机 `jsexec` 命令用)
         fetch: (...args) => fetch(...args), // 浏览器原生 fetch，代理到真实网络
-        debug: false,
+        debug: true,
       });
     } catch (err) {
       gatewayError = String(err && err.message ? err.message : err);

@@ -116,8 +116,6 @@ function indexOfBytes(haystack, needle) {
 }
 // 在 HTTP 请求头块末尾(\r\n\r\n 之前)插入一行 X-Fetch-Abort: <token>。
 // 找不到完整头块时原样返回(调用方需继续缓冲)。
-const PROXY_DEBUG = false;
-function pdbg(...a) { if (PROXY_DEBUG) console.log("[proxy]", ...a); }
 const CRLF = new Uint8Array([13, 10]);
 const CRLFCRLF = new Uint8Array([13, 10, 13, 10]);
 function insertAbortHeader(buf, token) {
@@ -351,6 +349,26 @@ async function handleDnsQuery(gw, query) {
   }
 }
 
+// 复用 @tcpip 的 ReadableStream -> async iterable 适配器（与 vendor/tcpip-dns 内部一致）。
+// 关键：stack.udp 的 socket.readable 是标准 ReadableStream，它本身没有
+// [Symbol.asyncIterator]，不能直接 `for await (... of socket.readable)`（会抛
+// "undefined is not a function"），必须先 getReader() 再用 async generator 包装。
+function c(e, r) {
+  let a = e.getReader();
+  return m(a, r);
+}
+async function* m(e, r) {
+  try {
+    for (; ; ) {
+      let { done: a, value: n } = await e.read();
+      if (a) return n;
+      yield n;
+    }
+  } finally {
+    r?.preventCancel || await e.cancel(), e.releaseLock();
+  }
+}
+
 // 在 UDP 上起 DNS 服务：A/AAAA 本地合成，其余类型直接经 DoH wire 转发。
 function startDnsServer(gw, stack) {
   let socket = null;
@@ -358,7 +376,7 @@ function startDnsServer(gw, stack) {
     try {
       socket = await stack.udp.open({ host: gw.gatewayIp, port: gw.dnsPort });
       const writer = socket.writable.getWriter();
-      for await (const pkt of socket.readable) {
+      for await (const pkt of c(socket.readable)) {
         const { host, port, data } = pkt;
         handleDnsQuery(gw, data)
           .then((resp) => { if (resp) return writer.write({ host, port, data: resp }); })
@@ -442,7 +460,7 @@ export async function proxyToGuest(gw, req) {
   }
   headers["Connection"] = "close";
 
-  pdbg("connect ->", guestIp + ":" + port, method, req.path);
+  if (gw.debug) console.log("[proxy] connect ->", guestIp + ":" + port, method, req.path);
   const init = { method, headers };
   if (req.body && req.body.length) init.body = req.body;
 
@@ -458,7 +476,7 @@ export async function proxyToGuest(gw, req) {
   } catch (e) {
     return { error: "proxy to guest failed: " + (e && e.message ? e.message : e) };
   }
-  pdbg("response", res.status, res.statusText);
+  if (gw.debug) console.log("[proxy] response", res.status, res.statusText);
 
   // 用 @tcpip/http 的解析结果，把 body 整体缓冲为 Uint8Array 一次性回传，规避
   // “流式分块 + 结束协议”在 SW<->页面<->浏览器 三段链路上的 done 竞态转圈。
@@ -478,7 +496,7 @@ export async function proxyToGuest(gw, req) {
     outHeaders.push([k, v]);
   });
   outHeaders.push(["Content-Length", String(body.length)]); // 定长回传，浏览器明确知道何时结束
-  pdbg("body complete", res.status, body.length, "bytes");
+  if (gw.debug) console.log("[proxy] body complete", res.status, body.length, "bytes");
   return { status: res.status, statusText: res.statusText, headers: outHeaders, body };
 }
 

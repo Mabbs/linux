@@ -1,0 +1,33 @@
+#!/bin/busybox sh
+
+/bin/busybox --install -s
+
+mkdir -p /dev /proc /sys /tmp
+chmod 1777 /tmp
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+hostname Mayx-Blog
+export PS1='\[\e[32m\]╭─\[\e[1;32m\]\u@\h \[\e[0m\][\A] \[\e[1;31m\][\[\e[33m\]\w\[\e[1;31m\]]\n\[\e[0;32m\]╰─\[\e[0m\]\$ '
+export TZ=CST-8
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export HOME=/root
+
+ip link set lo up
+ifc=$(ls /sys/class/net 2>/dev/null | grep -v '^lo$' | head -n1)
+if [ -n "$ifc" ]; then
+  ip link set "$ifc" up
+  ip addr add 10.0.2.15/24 dev "$ifc"
+  ip route add default via 10.0.2.2 dev "$ifc"
+  echo "nameserver 10.0.2.2" > /etc/resolv.conf
+else
+  echo "[net] 未找到网卡，网络不可用"
+fi
+
+blog
+httpd -h /var/www/html
+cd /root
+
+while true; do
+    setsid cttyhack sh </dev/hvc0 >/dev/hvc0 2>&1
+done

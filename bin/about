@@ -1,0 +1,3 @@
+#!/bin/sh
+wget -qO - http://mabbs.github.io/humans.txt || echo "Error: 无法获取 humans.txt"
+echo ""

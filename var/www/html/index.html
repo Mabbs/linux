@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>系统状态监控</title>
+  <style>
+    :root {
+      --bg-color: #0f172a;
+      --card-bg: #1e293b;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-blue: #38bdf8;
+      --accent-green: #4ade80;
+      --accent-warn: #fbbf24;
+      --accent-danger: #f87171;
+      --border-color: #334155;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      padding: 16px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .dashboard {
+      width: 100%;
+      max-width: 1000px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* 顶部 Header */
+    .header {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 14px 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .host-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .host-name {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--accent-blue);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      padding: 3px 8px;
+      border-radius: 20px;
+      background: rgba(74, 222, 128, 0.1);
+      color: var(--accent-green);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      box-shadow: 0 0 6px var(--accent-green);
+    }
+
+    .offline .status-dot {
+      background: var(--accent-danger);
+      box-shadow: 0 0 6px var(--accent-danger);
+    }
+    .offline {
+      background: rgba(248, 113, 113, 0.1);
+      color: var(--accent-danger);
+    }
+
+    /* 网格布局 */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .card-title {
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    /* 改进点：防止行内挤压换行 */
+    .metric-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    /* 改进点：适当缩减数值字号 */
+    .metric-value {
+      font-size: 0.92rem;
+      font-weight: 600;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 进度条 */
+    .progress-bar {
+      width: 100%;
+      height: 6px;
+      background: var(--border-color);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--accent-blue);
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    /* 负载展示 */
+    .load-pills {
+      display: flex;
+      gap: 8px;
+    }
+
+    .load-pill {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 6px;
+      padding: 8px 4px;
+      text-align: center;
+    }
+
+    .load-pill .label {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+    }
+
+    .load-pill .val {
+      font-size: 0.95rem;
+      font-weight: bold;
+      margin-top: 2px;
+    }
+
+    /* 网络列表 */
+    .net-item {
+      border-top: 1px solid var(--border-color);
+      padding-top: 10px;
+      margin-top: 8px;
+    }
+
+    .net-item:first-child {
+      border-top: none;
+      padding-top: 0;
+      margin-top: 0;
+    }
+
+    .net-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+
+    .net-name {
+      font-weight: 600;
+      font-size: 0.9rem;
+      color: var(--accent-blue);
+    }
+
+    .net-detail {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .sub-text {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="dashboard">
+    <!-- Header -->
+    <header class="header">
+      <div class="host-info">
+        <div class="host-name" id="hostname">Loading...</div>
+        <div class="status-badge" id="status-badge">
+          <div class="status-dot"></div>
+          <span id="status-text">连接中</span>
+        </div>
+      </div>
+      <div class="sub-text">
+        运行时间: <span id="uptime" style="color: var(--text-main); font-weight:600;">-</span>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- 系统与内核 -->
+      <div class="card">
+        <div class="card-title">系统信息</div>
+        <div class="metric-row">
+          <span class="sub-text">内核</span>
+          <span class="metric-value" id="kernel-name">-</span>
+        </div>
+        <div class="metric-row">
+          <span class="sub-text">版本</span>
+          <span class="metric-value" id="kernel-release">-</span>
+        </div>
+        <div class="metric-row">
+          <span class="sub-text">架构</span>
+          <span class="metric-value" id="kernel-machine">-</span>
+        </div>
+        <div class="metric-row">
+          <span class="sub-text">CPU 核心</span>
+          <span class="metric-value" id="cpu-cores">-</span>
+        </div>
+      </div>
+
+      <!-- CPU 负载 -->
+      <div class="card">
+        <div class="card-title">系统负载 (Load Average)</div>
+        <div class="load-pills">
+          <div class="load-pill">
+            <div class="label">1 min</div>
+            <div class="val" id="load-1">-</div>
+          </div>
+          <div class="load-pill">
+            <div class="label">5 min</div>
+            <div class="val" id="load-5">-</div>
+          </div>
+          <div class="load-pill">
+            <div class="label">15 min</div>
+            <div class="val" id="load-15">-</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 内存使用率 -->
+      <div class="card">
+        <div class="card-title">内存 (RAM)</div>
+        <div>
+          <div class="metric-row">
+            <span class="sub-text">已用 / 总量</span>
+            <span id="ram-text" class="metric-value">- / -</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="ram-bar"></div>
+          </div>
+        </div>
+        <div style="margin-top: 8px;" id="swap-container">
+          <div class="metric-row">
+            <span class="sub-text">Swap 交换区</span>
+            <span id="swap-text" class="metric-value">- / -</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="swap-bar" style="background: var(--accent-warn);"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 网络接口 -->
+      <div class="card" style="grid-column: 1 / -1;">
+        <div class="card-title">网络接口</div>
+        <div id="network-list">
+          <!-- 动态渲染网络列表 -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = 'cgi-bin/status.cgi';
+
+    // 格式化 Byte / KB 为易读单位
+    function formatBytes(bytes, decimals = 1) {
+      if (!bytes || bytes === 0) return '0 B';
+      const k = 1024;
+      const dm = decimals < 0 ? 0 : decimals;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+    }
+
+    async function fetchStatus() {
+      const badge = document.getElementById('status-badge');
+      const statusText = document.getElementById('status-text');
+
+      try {
+        const response = await fetch(API_URL);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+
+        // 更新在线状态
+        badge.classList.remove('offline');
+        statusText.textContent = '在线';
+
+        // 基础信息
+        document.getElementById('hostname').textContent = data.hostname || 'Unknown';
+        document.getElementById('uptime').textContent = data.uptime?.human || '-';
+        document.getElementById('kernel-name').textContent = data.kernel?.name || '-';
+        document.getElementById('kernel-release').textContent = data.kernel?.release || '-';
+        document.getElementById('kernel-machine').textContent = data.kernel?.machine || '-';
+        document.getElementById('cpu-cores').textContent = data.cpu?.cores ? `${data.cpu.cores} 核` : '-';
+
+        // 负载
+        document.getElementById('load-1').textContent = data.load_average?.['1min']?.toFixed(2) ?? '-';
+        document.getElementById('load-5').textContent = data.load_average?.['5min']?.toFixed(2) ?? '-';
+        document.getElementById('load-15').textContent = data.load_average?.['15min']?.toFixed(2) ?? '-';
+
+        // 内存计算
+        if (data.memory) {
+          const total = data.memory.total_kb * 1024;
+          const avail = data.memory.available_kb * 1024;
+          const used = total - avail;
+          const ramPercent = total > 0 ? ((used / total) * 100).toFixed(0) : 0;
+
+          // 保持简洁展示，避免字符太长挤压
+          document.getElementById('ram-text').textContent = `${formatBytes(used)} / ${formatBytes(total)} (${ramPercent}%)`;
+          document.getElementById('ram-bar').style.width = `${ramPercent}%`;
+
+          // Swap
+          const swapTotal = data.memory.swap_total_kb * 1024;
+          const swapFree = data.memory.swap_free_kb * 1024;
+          const swapUsed = swapTotal - swapFree;
+          if (swapTotal > 0) {
+            const swapPercent = ((swapUsed / swapTotal) * 100).toFixed(0);
+            document.getElementById('swap-text').textContent = `${formatBytes(swapUsed)} / ${formatBytes(swapTotal)} (${swapPercent}%)`;
+            document.getElementById('swap-bar').style.width = `${swapPercent}%`;
+          } else {
+            document.getElementById('swap-text').textContent = '未启用';
+            document.getElementById('swap-bar').style.width = '0%';
+          }
+        }
+
+        // 网络渲染
+        if (data.network && Array.isArray(data.network)) {
+          const netContainer = document.getElementById('network-list');
+          netContainer.innerHTML = data.network.map(net => {
+            const ipList = net.ipv4?.join(', ') || '无 IP';
+            const stateColor = net.state === 'up' ? 'var(--accent-green)' : 'var(--text-muted)';
+            return `
+              <div class="net-item">
+                <div class="net-header">
+                  <span class="net-name">${net.name} <small style="color: ${stateColor}">(${net.state})</small></span>
+                  <span class="sub-text">${net.mac}</span>
+                </div>
+                <div class="net-detail">
+                  <div><strong>IPv4:</strong> ${ipList}</div>
+                  <div><strong>流量:</strong> RX ${formatBytes(net.rx_bytes)} | TX ${formatBytes(net.tx_bytes)}</div>
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+
+      } catch (err) {
+        console.error('获取系统状态失败:', err);
+        badge.classList.add('offline');
+        statusText.textContent = '连接失败';
+      }
+    }
+
+    fetchStatus();
+    setInterval(fetchStatus, 5000);
+  </script>
+</body>
+</html>

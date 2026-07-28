@@ -1,0 +1,36 @@
+#!/bin/sh
+# show - 查看文章 Markdown（用 wget 抓取，明文 http 由网关升级 https）
+
+if [ -z "$1" ]; then
+    echo "用法: show N"
+    echo "N为文章序号，使用 list 命令查看"
+    exit 1
+fi
+# 如果缓存不存在则获取
+if [ ! -f /tmp/articles ]; then
+    fetch_articles
+fi
+N=$1
+found=0
+while IFS='|' read num date url title; do
+    if [ "$num" = "$N" ]; then
+        found=1
+        adate=$date
+        aurl=$url
+        atitle=$title
+        break
+    fi
+done < /tmp/articles
+if [ "$found" -eq 0 ]; then
+    echo "错误: 找不到第 $N 篇文章"
+    exit 1
+fi
+echo "标题: $atitle"
+echo "日期: $adate"
+echo "========================================"
+echo ""
+dateDash=$(echo "$adate" | tr '/' '-')
+slug=$(echo "$aurl" | sed 's#.*/##; s/\.html$//')
+mdUrl="http://raw.githubusercontent.com/Mabbs/mabbs.github.io/refs/heads/master/_posts/${dateDash}-${slug}.md"
+wget -qO - "$mdUrl" | mdhl || echo "Error: 无法获取 $mdUrl"
+echo ""

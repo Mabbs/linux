@@ -1,0 +1,40 @@
+#!/bin/sh
+# list - 列出博客文章
+# 用法: list [N]  N为页数，每页显示10篇文章
+
+# ANSI 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+# 如果缓存不存在则获取
+if [ ! -f /tmp/articles ]; then
+    fetch_articles
+fi
+
+N=${1:-1}
+case "$N" in
+    *[!0-9]*)
+        printf "${RED}错误: 页数必须是数字: %s${RESET}\n" "$N"
+        exit 1
+        ;;
+esac
+
+total_posts=0
+printf "${GREEN}${BOLD}=== 博客文章列表 ===${RESET}\n\n"
+
+while IFS='|' read num date url title; do
+    if [ "$num" -gt "$((($N-1)*10))" ] && [ "$num" -le "$((($N-1)*10+10))" ]; then
+        printf "${YELLOW}%s${RESET}. [${CYAN}%s${RESET}] ${BOLD}%s${RESET}\n" \
+               "$num" "$date" "$title"
+    fi
+    total_posts=$num
+done < /tmp/articles
+
+printf "\n${BLUE}总共 %s 篇文章，当前第 %s 页，共 %s 页${RESET}\n" \
+       "$total_posts" "$N" "$((($total_posts+9)/10))"
+printf "${BLUE}使用 show N 查看，open N 在浏览器打开，comment N 获取评论。${RESET}\n"

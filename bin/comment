@@ -1,0 +1,69 @@
+#!/bin/sh
+# comment - 获取文章评论（GitHub Issues -> comments）
+# 联网用 wget（网关 fetch 代理），解析用 jsexec 纯本地计算（不卡浏览器）
+
+if [ -z "$1" ]; then
+    echo "用法: comment N"
+    echo "N为文章序号，使用 list 命令查看"
+    exit 1
+fi
+# 如果缓存不存在则获取
+if [ ! -f /tmp/articles ]; then
+    fetch_articles
+fi
+N=$1
+found=0
+while IFS='|' read num date url title; do
+    if [ "$num" = "$N" ]; then
+        found=1
+        aurl=$url
+        atitle=$title
+        break
+    fi
+done < /tmp/articles
+if [ "$found" -eq 0 ]; then
+    echo "错误: 找不到第 $N 篇文章"
+    exit 1
+fi
+echo "文章: $atitle"
+echo "URL: $aurl"
+echo "========================================"
+# GitHub API 需要带认证头才能提升速率上限(默认未认证 60 次/小时)
+AUTH='Basic MzY1NTdhZWM0YzNjYjA0ZjdhYzY6YWMzMjk5MzI5OTc1MWNiNWE5YmE4MWNmMmIxNzFjY2E2NTg3OWNkYg=='
+label="Gitalk,${aurl%.html}"
+issuesApi="http://api.github.com/repos/Mabbs/mabbs.github.io/issues?labels=$(echo "$label" | sed 's/ /%20/g')"
+wget -qO /tmp/issues.json --header="Authorization: $AUTH" "$issuesApi" || { echo "Error: 无法获取 issues"; exit 1; }
+# 解析 issues，取出第一个 issue 的 comments_url
+# 用临时文件 + 独立 here-doc 命令，避开 busybox ash 对「{ } | heredoc」组合的解析坑
+ISSUES_JS=/tmp/_comment_issues_$$.js
+{ printf 'var raw = '; cat /tmp/issues.json; printf ';\n'; } > "$ISSUES_JS"
+cat >> "$ISSUES_JS" <<'JSEOF'
+var issues = Array.isArray(raw) ? raw : [];
+if (!issues.length) { ''; } else { issues[0].comments_url.replace('https://', 'http://') || ''; }
+JSEOF
+commentsUrl=$(jsexec < "$ISSUES_JS")
+rm -f "$ISSUES_JS"
+rm -f /tmp/issues.json
+if [ -z "$commentsUrl" ]; then
+    echo "未找到对应的 Issue（无评论）"
+    exit 0
+fi
+wget -qO /tmp/comments.json --header="Authorization: $AUTH" "$commentsUrl" || { echo "Error: 无法获取 comments"; exit 1; }
+# 解析 comments，拼出可阅读文本
+COMMENTS_JS=/tmp/_comment_comments_$$.js
+{ printf 'var raw = '; cat /tmp/comments.json; printf ';\n'; } > "$COMMENTS_JS"
+cat >> "$COMMENTS_JS" <<'JSEOF'
+var out = '';
+var cs = Array.isArray(raw) ? raw : [];
+if (!cs.length) { out = '该文章暂无评论'; }
+else {
+    for (var i = 0; i < cs.length; i++) {
+        var c = cs[i];
+        out += '----\n作者: ' + (c.user && c.user.login ? c.user.login : 'unknown') + '\n时间: ' + (c.created_at || '') + '\n' + c.body + '\n';
+    }
+}
+out;
+JSEOF
+jsexec < "$COMMENTS_JS"
+rm -f "$COMMENTS_JS"
+echo ""

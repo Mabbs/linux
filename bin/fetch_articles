@@ -1,0 +1,16 @@
+#!/bin/sh
+# fetch_articles - 让网关的 jsexec 服务(浏览器内)直接 fetch 并格式化文章列表
+
+echo "正在获取文章列表..."
+jsexec > /tmp/articles <<'JSEOF'
+fetch('https://mabbs.github.io/search.json')
+  .then(raw => raw.json())
+  .then(raw => {
+    var posts = Array.isArray(raw) ? raw : (raw.posts || []);
+    var lines = '';
+    for (var i = 0; i < posts.length; i++) {
+      lines += (i + 1) + '|' + (posts[i].date || '') + '|' + (posts[i].url || '') + '|' + (posts[i].title || '') + '\n';
+    }
+    return lines;
+  })
+JSEOF

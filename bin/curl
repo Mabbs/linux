@@ -1,0 +1,36 @@
+#!/bin/sh
+wget_args=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -s) wget_args="$wget_args -q" ;;
+        -v) wget_args="$wget_args -S" ;;   
+        -o) shift; wget_args="$wget_args -O $1" ;;
+        -O) ;;   # wget 默认用远程文件名，忽略
+        -I) wget_args="$wget_args --spider -S" ;;
+        -L) ;;   # wget 默认跟随重定向
+        -A) shift; wget_args="$wget_args -U $1" ;;
+        -H) shift; wget_args="$wget_args --header=$1" ;;
+        -d) shift
+            case "$wget_args" in
+                *--post-data=*)
+                    wget_args="$(echo "$wget_args" | sed "s/\(--post-data=.*\)/\1\&$1/")" ;;
+                *)
+                    wget_args="$wget_args --post-data=$1" ;;
+            esac
+            ;;
+        -X) shift; echo "警告: wget 不支持 -X/--method，已忽略" >&2 ;;
+        -*) echo "忽略未知选项 $1" >&2 ;;
+        *)
+            case "$wget_args" in
+                *-O*|*--spider*) ;;
+                *) wget_args="$wget_args -O-" ;;
+            esac
+            exec wget $wget_args -- "$1"
+            ;;
+    esac
+    shift
+done
+
+echo "错误：需要提供 URL" >&2
+exit 1

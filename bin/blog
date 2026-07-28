@@ -1,0 +1,31 @@
+#!/bin/sh
+# 博客帮助信息 - 带 ANSI 颜色
+
+# ANSI 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+printf "${YELLOW}========================================${RESET}\n"
+printf "${GREEN}${BOLD}  Mayx Blog Command Line Tool${RESET}\n"
+printf "${YELLOW}========================================${RESET}\n\n"
+
+printf "可用命令：\n\n"
+printf "  ${CYAN}${BOLD}blog${RESET}        显示此帮助信息\n\n"
+printf "  ${CYAN}${BOLD}list [N]${RESET}    列出博客文章\n"
+printf "              N为页数，每页显示10篇文章\n\n"
+printf "  ${CYAN}${BOLD}show N${RESET}      查看第N篇文章的Markdown内容\n"
+printf "              N为list命令显示的序号\n\n"
+printf "  ${CYAN}${BOLD}open N${RESET}      在浏览器中打开第N篇文章\n\n"
+printf "  ${CYAN}${BOLD}comment N${RESET}   获取第N篇文章的评论\n\n"
+printf "  ${CYAN}${BOLD}about${RESET}       显示博客信息\n\n"
+
+printf "示例：\n"
+printf "  ${YELLOW}list 5${RESET}      列出第5页的博客文章\n"
+printf "  ${YELLOW}show 1${RESET}      查看第1篇文章内容\n"
+printf "  ${YELLOW}open 3${RESET}      在浏览器打开第3篇文章\n\n"
+
+printf "${YELLOW}========================================${RESET}\n"

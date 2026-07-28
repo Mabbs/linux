@@ -1,0 +1,105 @@
+#!/bin/sh
+# mdhl -- Markdown HighLight
+
+ESC=$(printf '\033')
+RESET="${ESC}[0m"; BOLD="${ESC}[1m"; DIM="${ESC}[2m"; STRIKE="${ESC}[9m"
+UNDERLINE="${ESC}[4m"; ITALIC="${ESC}[3m"
+
+RED="${ESC}[31m"; GREEN="${ESC}[32m"; YELLOW="${ESC}[33m"
+BLUE="${ESC}[34m"; MAGENTA="${ESC}[35m"; CYAN="${ESC}[36m"; WHITE="${ESC}[37m"
+
+in_code=0
+
+inline_highlight() {
+    printf '%s\n' "$1" | sed \
+        -e 's/\[\([^]]*\)\](\([^)]*\))/'"${UNDERLINE}"'\1'"${RESET}${DIM}"'('"${CYAN}"'\2'"${RESET}${DIM}"')'"${RESET}"'/g' \
+        -e 's/!\[\([^]]*\)\](\([^)]*\))/'"${BOLD}${RED}"'IMAGE:'"${RESET}${UNDERLINE}"'\1'"${RESET}${DIM}"'('"${CYAN}"'\2'"${RESET}${DIM}"')'"${RESET}"'/g' \
+        -e 's/\(~~[^~`]*\)`\([^`]*\)`/\1'"${DIM}${YELLOW}"'\2'"${RESET}${STRIKE}${DIM}${RED}"'/g' \
+        -e 's/~~\([^~]*\)~~/'"${STRIKE}${DIM}${RED}"'\1'"${RESET}"'/g' \
+        -e 's/`\([^`]*\)`/'"${DIM}${YELLOW}"'\1'"${RESET}"'/g' \
+        -e 's/\*\*\([^*]*\)\*\*/'"${BOLD}${YELLOW}"'\1'"${RESET}"'/g' \
+        -e 's/__\([^_]*\)__/'"${BOLD}${YELLOW}"'\1'"${RESET}"'/g' \
+        -e 's/\(^\Vert{}[^*]\)\*\([^*]*\)\*\([^*]\Vert{}$\)/\1'"${ITALIC}${CYAN}"'\2'"${RESET}"'\3/g'
+}
+
+while IFS= read -r rawline || [ -n "$rawline" ]; do
+    # 1. 空行处理
+    trimmed="${rawline#"${rawline%%[![:space:]]*}"}"
+    if [ -z "$trimmed" ]; then
+        echo ""
+        continue
+    fi
+
+    # 2. 代码块
+    case $trimmed in
+        '```'*|'~~~'*)
+            in_code=$((1 - in_code))
+            printf '%s\n' "${DIM}${rawline}${RESET}"
+            continue
+            ;;
+    esac
+
+    if [ "$in_code" -eq 1 ]; then
+        printf '%s\n' "${WHITE}${rawline}${RESET}"
+        continue
+    fi
+
+    # 3. 标题
+    case $trimmed in
+        '###### '*|'##### '*|'#### '*|'### '*|'## '*|'# '*)
+            tmp="${trimmed%% *}"
+            case ${#tmp} in
+                1) color="${BOLD}${RED}" ;;
+                2) color="${BOLD}${GREEN}" ;;
+                3) color="${BOLD}${YELLOW}" ;;
+                4) color="${BOLD}${BLUE}" ;;
+                5) color="${BOLD}${MAGENTA}" ;;
+                6) color="${BOLD}${CYAN}" ;;
+            esac
+            printf '%s\n' "${color}${rawline}${RESET}"
+            continue
+            ;;
+    esac
+
+    # 4. 水平线
+    case $trimmed in
+        ---*|***|___*)
+            case $trimmed in
+                *[!-*\ _]*) ;;
+                *) printf '%s\n' "${DIM}${MAGENTA}${rawline}${RESET}"
+                   continue ;;
+            esac
+            ;;
+    esac
+
+    # 5. 引用
+    case $trimmed in
+        '>'*) printf '%s\n' "${DIM}${BLUE}${rawline}${RESET}"
+             continue ;;
+    esac
+
+    # 6. 无序列表
+    case $trimmed in
+        [-*+]\ *)
+            indent="${rawline%%[![:space:]]*}"
+            rest="${trimmed#? }"
+            marker="${trimmed%"$rest"}"
+            printf '%s\n' "${indent}${BOLD}${GREEN}${marker}${RESET} $(inline_highlight "$rest")"
+            continue
+            ;;
+    esac
+
+    # 7. 有序列表
+    case $trimmed in
+        [0-9]*'. '*)
+            indent="${rawline%%[![:space:]]*}"
+            rest="${trimmed#*[0-9]. }"
+            marker="${trimmed%"$rest"}"
+            printf '%s\n' "${indent}${BOLD}${YELLOW}${marker}${RESET} $(inline_highlight "$rest")"
+            continue
+            ;;
+    esac
+
+    # 8. 普通段落
+    inline_highlight "$rawline"
+done

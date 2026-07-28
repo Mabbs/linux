@@ -1,0 +1,14 @@
+#!/bin/sh
+# jsexec - 在网关的 jsexec HTTP 服务上执行 JavaScript，输出结果到 stdout。
+# 等价于原 /dev/jsexec 设备：把 JS 写到设备，再读取结果。
+# 用法:  echo '1+2' | jsexec     或     jsexec < script.js
+# 环境变量 JSEXEC_HOST / JSEXEC_PORT 可覆盖网关地址(默认 10.0.2.2:20728)。
+JSEXEC_HOST="${JSEXEC_HOST:-10.0.2.2}"
+JSEXEC_PORT="${JSEXEC_PORT:-20728}"
+
+TMP="$(mktemp)"
+cat > "$TMP"
+wget -q -O - --post-file="$TMP" "http://${JSEXEC_HOST}:${JSEXEC_PORT}/" 2>/dev/null
+RC=$?
+rm -f "$TMP"
+exit $RC

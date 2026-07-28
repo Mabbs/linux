@@ -1,0 +1,39 @@
+#!/bin/sh
+# open - 在浏览器中打开文章
+# 用法: open N  N为文章序号(list命令显示的序号)
+# 仅调用 window.open，不涉及任何网络请求，因此不会卡住浏览器
+
+if [ -z "$1" ]; then
+    echo "用法: open N"
+    echo "N为文章序号，使用 list 命令查看"
+    exit 1
+fi
+# 如果缓存不存在则获取
+if [ ! -f /tmp/articles ]; then
+    fetch_articles
+fi
+N=$1
+found=0
+while IFS='|' read num date url title; do
+    if [ "$num" = "$N" ]; then
+        found=1
+        aurl=$url
+        atitle=$title
+        break
+    fi
+done < /tmp/articles
+if [ "$found" -eq 0 ]; then
+    echo "错误: 找不到第 $N 篇文章"
+    exit 1
+fi
+echo "正在打开: $atitle"
+cat << JSEOF | jsexec
+var aurl = '$aurl';
+var fullUrl = 'https://mabbs.github.io' + aurl;
+if (window.open(fullUrl)) {
+    '已打开: ' + fullUrl;
+} else {
+    '浏览器阻止了弹出窗口，请允许弹出窗口以打开文章';
+}
+JSEOF
+echo ""

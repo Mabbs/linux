@@ -36,10 +36,22 @@ BEGIN {
 
     STYLE_START_MARKS = P_BOLD P_DIM P_ITALIC P_UNDERLINE P_STRIKE \
                         P_RED P_GREEN P_YELLOW P_BLUE P_MAGENTA P_CYAN P_WHITE
+
+    # ================================================================
+    # 最大行长度限制，0 表示不限制。
+    MAX_LINE_LENGTH = 1024
+    # ================================================================
 }
 
 {
     rawline = $0
+
+    # ─── 行长度检查：超过限制则原样输出，不解析 ─────────────
+    if (MAX_LINE_LENGTH > 0 && length(rawline) > MAX_LINE_LENGTH) {
+        print rawline
+        next
+    }
+
     trimmed = rawline
     sub(/^[[:space:]]+/, "", trimmed)
 
@@ -188,7 +200,7 @@ function inline_highlight(str,    cnt, code_arr, left, mid, right, text, url, al
         url = substr(mid, url_start, url_end - url_start + 1)
 
         # 如果不是以 https:// 开头，补上基础 URL
-        if (url !~ /^https:\/\//) {
+        if (url !~ /^https?:\/\// && url !~ /^mailto:/) {
             url = "https://mabbs.github.io" url
         }
 

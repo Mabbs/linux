@@ -8,7 +8,7 @@ if [ -z "$1" ]; then
     exit 1
 fi
 # 如果缓存不存在则获取
-if [ ! -f /tmp/articles ]; then
+if [ ! -s /tmp/articles ]; then
     fetch_articles
 fi
 N=$1

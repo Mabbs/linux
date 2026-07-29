@@ -114,33 +114,6 @@ BEGIN {
     print inline_highlight(rawline)
 }
 
-# ─── 特殊斜体（行首 / "|" 之后的 *...*）────────────────────
-function italic_special(str,    out, i, len, ch, j, next_ch, content) {
-    out = ""; len = length(str)
-    i = 1
-    while (i <= len) {
-        ch = substr(str, i, 1)
-        if (ch == "*") {
-            if (i == 1 || substr(str, i-1, 1) == "|") {
-                j = i + 1
-                while (j <= len && substr(str, j, 1) != "*") j++
-                if (j <= len && j > i + 1) {
-                    next_ch = (j == len) ? "" : substr(str, j+1, 1)
-                    if (j == len || next_ch != "|") {
-                        content = substr(str, i+1, j-i-1)
-                        out = out P_ITALIC content P_RESET
-                        i = j + 1
-                        continue
-                    }
-                }
-            }
-        }
-        out = out ch
-        i++
-    }
-    return out
-}
-
 # ─── 智能代码还原：正确继承外层样式并关闭代码样式 ──────────
 function expand_code(str, code_arr, cnt,    i, tag, start, prefix, j, ch, active, replace) {
     for (i = 0; i < cnt; i++) {
@@ -207,8 +180,8 @@ function inline_highlight(str,    cnt, code_arr, left, mid, right, text, url, al
         str = left P_UNDERLINE ESC "]8;;" url ESC "\\" text ESC "]8;;" ESC "\\" P_RESET right
     }
 
-    # 4. 粗体 **...** 和 __...__
-    while (match(str, /\*\*[^*]+\*\*/)) {
+    # 4. 粗体 **...**（允许内部嵌套成对 *，如 **a *b* c**）
+    while (match(str, /\*\*[^*](\*?[^*])*\*\*/)) {
         left  = substr(str, 1, RSTART-1)
         mid   = substr(str, RSTART+2, RLENGTH-4)
         right = substr(str, RSTART+RLENGTH)
@@ -221,10 +194,7 @@ function inline_highlight(str,    cnt, code_arr, left, mid, right, text, url, al
         str = left P_BOLD P_YELLOW mid P_RESET right
     }
 
-    # 5. 特殊斜体（行首 / 表格上下文）
-    str = italic_special(str)
-
-    # 6. 普通斜体 *...*
+    # 5. 普通斜体 *...*
     while (match(str, /\*[^*]+\*/)) {
         left  = substr(str, 1, RSTART-1)
         mid   = substr(str, RSTART+1, RLENGTH-2)
@@ -232,7 +202,7 @@ function inline_highlight(str,    cnt, code_arr, left, mid, right, text, url, al
         str = left P_ITALIC mid P_RESET right
     }
 
-    # 7. 删除线 ~~...~~
+    # 6. 删除线 ~~...~~
     while (match(str, /~~[^~]+~~/)) {
         left  = substr(str, 1, RSTART-1)
         mid   = substr(str, RSTART+2, RLENGTH-4)
@@ -240,11 +210,11 @@ function inline_highlight(str,    cnt, code_arr, left, mid, right, text, url, al
         str = left P_STRIKE P_DIM P_RED mid P_RESET right
     }
 
-    # 8. 智能还原代码（带样式继承）
+    # 7. 智能还原代码（带样式继承）
     if (cnt > 0)
         str = expand_code(str, code_arr, cnt)
 
-    # 9. 占位符 → 真实 ANSI
+    # 8. 占位符 → 真实 ANSI
     gsub(P_RESET,     RESET,     str)
     gsub(P_BOLD,      BOLD,      str)
     gsub(P_DIM,       DIM,       str)

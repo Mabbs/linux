@@ -5,8 +5,6 @@ export interface Instance extends WebAssembly.Instance {
         trigger_irq(irq: number): void;
         syscall(nr: number, arg0: number, arg1: number, arg2: number, arg3: number, arg4: number, arg5: number): number;
         get_thread_area(): number;
-        get_args_length(): number;
-        get_args(buf: number): number;
         copy_siginfo(to: number): number;
         clear_siginfo(): void;
     };
@@ -26,6 +24,7 @@ export declare function allocate_shared_memory(initial_pages: number, preferred_
     memory: WebAssembly.Memory;
     maximum_pages: number;
 };
+export declare function memory_bytes(memory: WebAssembly.Memory, address: number, length?: number): Uint8Array<ArrayBufferLike> | null;
 /** Values for the kernel.terminate_machine guest/host ABI. */
 export declare enum MachineTerminationReason {
     Clean = 0,
@@ -81,7 +80,7 @@ export declare const HALT_KERNEL: unique symbol;
 export declare function kernel_imports({ is_worker, memory, spawn_worker, boot_console_write, boot_console_close, terminate_machine, run_on_main, get_user_context, worker_exit, }: {
     is_worker: boolean;
     memory: WebAssembly.Memory;
-    spawn_worker: (fn: number, arg: number, name: string, user: UserContext | null) => void;
+    spawn_worker: (fn: number, arg: number, name: string, user: UserContext | null, copy_user_memory: boolean) => number;
     boot_console_write: (message: ArrayBuffer) => void;
     boot_console_close: () => void;
     terminate_machine: (reason: MachineTerminationReason) => void;

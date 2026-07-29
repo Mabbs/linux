@@ -2,7 +2,7 @@
 import { platform } from "./platform.js";
 import { assert } from "./util.js";
 import { read_wasm_memories } from "./wasm_binary.js";
-import { allocate_shared_memory, HALT_KERNEL, kernel_imports, user_module_imports_supported, } from "./wasm.js";
+import { allocate_shared_memory, HALT_KERNEL, kernel_imports, memory_bytes, user_module_imports_supported, } from "./wasm.js";
 const unavailable = () => {
     throw new Error("not available on worker thread");
 };
@@ -17,18 +17,32 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user: parent,
     // One slot per nested SA_SIGINFO callback; null means its trampoline has
     // not requested the active signal payload yet.
     const siginfo_copy_results = [];
+    function copy_bytes(destination_memory, destination, source_memory, source, length) {
+        const to = memory_bytes(destination_memory, destination, length);
+        const from = memory_bytes(source_memory, source, length);
+        if (!to || !from)
+            return length;
+        try {
+            to.set(from);
+            return 0;
+        }
+        catch {
+            return length;
+        }
+    }
     function user_atomic_word(uaddr) {
         const address = uaddr >>> 0;
-        if (!context ||
-            (address & 3) !== 0 ||
-            address >
-                context.memory.buffer.byteLength - Int32Array.BYTES_PER_ELEMENT) {
+        if (!context || (address & 3) !== 0)
             return null;
-        }
-        return new Int32Array(context.memory.buffer, address, 1);
+        const bytes = memory_bytes(context.memory, address, Int32Array.BYTES_PER_ELEMENT);
+        return bytes ? new Int32Array(bytes.buffer, bytes.byteOffset, 1) : null;
     }
     function write_kernel_u32(addr, value) {
-        new DataView(kernel_memory.buffer).setUint32(addr >>> 0, value, true);
+        const bytes = memory_bytes(kernel_memory, addr >>> 0, Uint32Array.BYTES_PER_ELEMENT);
+        if (!bytes)
+            return false;
+        new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(0, value, true);
+        return true;
     }
     function call_start() {
         assert(instance);
@@ -53,8 +67,6 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user: parent,
                     return ret;
                 },
                 get_thread_area: kernel_instance.exports.get_thread_area,
-                get_args_length: kernel_instance.exports.get_args_length,
-                get_args: kernel_instance.exports.get_args,
                 copy_siginfo: (to) => {
                     const result = kernel_instance.exports.copy_siginfo(to);
                     const current = siginfo_copy_results.length - 1;
@@ -224,27 +236,31 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user: parent,
             },
             // memory:
             read(to, from, n) {
-                assert(context);
-                const destination = to >>> 0;
-                const source = from >>> 0;
                 const length = n >>> 0;
-                new Uint8Array(kernel_memory.buffer, destination, length).set(new Uint8Array(context.memory.buffer, source, length));
-                return 0;
+                if (!context)
+                    return length;
+                return copy_bytes(kernel_memory, to >>> 0, context.memory, from >>> 0, length);
             },
             write(to, from, n) {
-                assert(context);
-                const destination = to >>> 0;
-                const source = from >>> 0;
                 const length = n >>> 0;
-                new Uint8Array(context.memory.buffer, destination, length).set(new Uint8Array(kernel_memory.buffer, source, length));
-                return 0;
+                if (!context)
+                    return length;
+                return copy_bytes(context.memory, to >>> 0, kernel_memory, from >>> 0, length);
             },
             write_zeroes(to, n) {
-                assert(context);
-                const destination = to >>> 0;
                 const length = n >>> 0;
-                new Uint8Array(context.memory.buffer, destination, length).fill(0);
-                return 0;
+                if (!context)
+                    return length;
+                const destination = memory_bytes(context.memory, to >>> 0, length);
+                if (!destination)
+                    return length;
+                try {
+                    destination.fill(0);
+                    return 0;
+                }
+                catch {
+                    return length;
+                }
             },
             futex_atomic_op(oldval, uaddr, op, oparg) {
                 const word = user_atomic_word(uaddr);
@@ -270,31 +286,52 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user: parent,
                     default:
                         return -38; // function not implemented
                 }
-                write_kernel_u32(oldval, old);
-                return 0;
+                return write_kernel_u32(oldval, old) ? 0 : -14; // bad address
             },
             futex_atomic_cmpxchg(oldval, uaddr, expected, replacement) {
                 const word = user_atomic_word(uaddr);
                 if (!word)
                     return -14; // bad address
                 const old = Atomics.compareExchange(word, 0, expected, replacement);
-                write_kernel_u32(oldval, old);
-                return 0;
+                return write_kernel_u32(oldval, old) ? 0 : -14; // bad address
             },
         },
     };
 }
-function start({ fn, arg, vmlinux, memory, user: parent_user }) {
-    // Load-bearing: this worker may register after the parent has already
-    // grown the shared user memory, and V8 refreshes cached buffer wrappers
-    // per isolate asynchronously, so views built from the InitMessage wrapper
-    // can be shorter than the real memory and throw RangeError. grow(0)
-    // forces a synchronous wrapper refresh before any view is constructed.
-    parent_user?.memory.grow(0);
+function start({ fn, arg, vmlinux, memory, user: initial_user_context, user_copy_status, }) {
+    let user_context = initial_user_context;
+    if (user_copy_status) {
+        assert(user_context);
+        // fork.c permits COPY only for a single-user mm, and the caller blocks
+        // until publication below, so the source is stable. Allocate here so the
+        // private backing store is owned by the destination isolate, not the
+        // long-lived parent.
+        try {
+            const source = memory_bytes(user_context.memory, 0);
+            if (!source)
+                throw new RangeError("invalid source memory");
+            const copied = allocate_shared_memory(source.byteLength / 0x10000, user_context.maximum_pages);
+            const destination = memory_bytes(copied.memory, 0, source.byteLength);
+            if (!destination)
+                throw new RangeError("invalid destination memory");
+            destination.set(source);
+            user_context = { module: user_context.module, ...copied };
+            Atomics.store(user_copy_status, 0, 1);
+        }
+        catch {
+            Atomics.store(user_copy_status, 0, -12);
+        }
+        Atomics.notify(user_copy_status, 0);
+        if (Atomics.load(user_copy_status, 0) < 0) {
+            postMessage({ type: "worker_exit" });
+            platform.quit();
+            return;
+        }
+    }
     const user = user_imports({
         kernel_memory: memory,
         get_kernel_instance: () => instance,
-        parent_user,
+        parent_user: user_context,
     });
     const imports = {
         env: { memory },
@@ -306,13 +343,16 @@ function start({ fn, arg, vmlinux, memory, user: parent_user }) {
         kernel: kernel_imports({
             is_worker: true,
             memory,
-            spawn_worker(fn, arg, name, user) {
+            spawn_worker(fn, arg, name, user, copy_user_memory) {
                 const direct = new MessageChannel();
                 postMessage({
                     type: "spawn_worker",
                     name,
                     port: direct.port1,
                 }, [direct.port1]);
+                const user_copy_status = copy_user_memory
+                    ? new Int32Array(new SharedArrayBuffer(4))
+                    : null;
                 direct.port2.postMessage({
                     type: "init",
                     fn,
@@ -320,7 +360,16 @@ function start({ fn, arg, vmlinux, memory, user: parent_user }) {
                     vmlinux,
                     memory,
                     user,
+                    user_copy_status,
                 });
+                if (!user_copy_status)
+                    return 0;
+                // If publication wins the race, wait returns "not-equal"; no wakeup
+                // is lost.
+                Atomics.wait(user_copy_status, 0, 0);
+                const result = Atomics.load(user_copy_status, 0);
+                assert(result === 1 || result < 0, "copy wait completed without a result");
+                return result === 1 ? 0 : result;
             },
             boot_console_write(message) {
                 postMessage({ type: "boot_console_write", message });

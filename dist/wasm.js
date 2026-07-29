@@ -4,8 +4,6 @@ const supported_user_module_imports = new Set([
     "env\0memory\0memory",
     "linux\0syscall\0function",
     "linux\0get_thread_area\0function",
-    "linux\0get_args_length\0function",
-    "linux\0get_args\0function",
     "linux\0copy_siginfo\0function",
 ]);
 /** Whether every import can be supplied when a userspace module is instantiated. */
@@ -17,7 +15,7 @@ export function user_module_imports_supported(module) {
  * to reserve that much address space, degrading as far as the initial size.
  */
 export function allocate_shared_memory(initial_pages, preferred_maximum_pages, allocate = (descriptor) => new WebAssembly.Memory(descriptor)) {
-    let maximum_pages = Math.max(initial_pages, Math.min(preferred_maximum_pages, 4096))
+    let maximum_pages = preferred_maximum_pages;
     for (;;) {
         try {
             return {
@@ -36,6 +34,32 @@ export function allocate_shared_memory(initial_pages, preferred_maximum_pages, a
             }
             maximum_pages = smaller_maximum;
         }
+    }
+}
+/*
+ * Read memory.buffer immediately before constructing a view so growth in
+ * another worker is visible. Turn invalid bounds and host exceptions into an
+ * ordinary failure result for kernel copy helpers.
+ *
+ * Omitting length returns the remainder of the current memory. Fork uses this
+ * to derive the child's initial page count and bytes from the same view.
+ */
+export function memory_bytes(memory, address, length) {
+    try {
+        const buffer = memory.buffer;
+        const view_length = length ?? buffer.byteLength - address;
+        if (!Number.isSafeInteger(address) ||
+            !Number.isSafeInteger(view_length) ||
+            address < 0 ||
+            view_length < 0 ||
+            view_length > buffer.byteLength ||
+            address > buffer.byteLength - view_length) {
+            return null;
+        }
+        return new Uint8Array(buffer, address, view_length);
+    }
+    catch {
+        return null;
     }
 }
 const WASM_USER_MEMORY_NONE = 0;
@@ -107,34 +131,24 @@ export function kernel_imports({ is_worker, memory, spawn_worker, boot_console_w
             const comm_length = comm_len >>> 0;
             const name = new TextDecoder().decode(new Uint8Array(memory.buffer, comm_address, comm_length).slice());
             let user = null;
+            let copy_user_memory = false;
             if (user_memory !== WASM_USER_MEMORY_NONE) {
                 const context = get_user_context();
                 if (!context)
                     return -22; // invalid argument
-                const memory_pages = context.memory.buffer.byteLength / 0x10000;
                 switch (user_memory) {
                     case WASM_USER_MEMORY_SHARE:
                         user = context;
                         break;
                     case WASM_USER_MEMORY_COPY:
-                        try {
-                            const copied = allocate_shared_memory(memory_pages, context.maximum_pages);
-                            new Uint8Array(copied.memory.buffer).set(new Uint8Array(context.memory.buffer));
-                            user = {
-                                module: context.module,
-                                ...copied,
-                            };
-                        }
-                        catch {
-                            return -12; // out of memory
-                        }
+                        user = context;
+                        copy_user_memory = true;
                         break;
                     default:
                         return -22; // invalid argument
                 }
             }
-            spawn_worker(fn, arg, name, user);
-            return 0;
+            return spawn_worker(fn, arg, name, user, copy_user_memory);
         },
         run_on_main,
     };

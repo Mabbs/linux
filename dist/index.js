@@ -41,8 +41,7 @@ const resources = (async () => {
 })();
 const PAGE_SIZE = 0x10000;
 // Leave the final wasm32 page out so the physical-memory size fits in u32.
-// const KERNEL_MEMORY_MAXIMUM_PAGES = 0xffff;
-const KERNEL_MEMORY_MAXIMUM_PAGES = 0x1000;
+const KERNEL_MEMORY_MAXIMUM_PAGES = 0xffff;
 function kernel_initial_pages(memory, initcpio_size) {
     const maximum = BigInt(KERNEL_MEMORY_MAXIMUM_PAGES);
     assert(memory.minimum <= maximum &&
@@ -193,10 +192,15 @@ export async function spawnMachine(options) {
                     const message = raw;
                     switch (message.type) {
                         case "spawn_worker":
-                            start_worker(message.name, {
-                                type: "forwarded_init",
-                                port: message.port,
-                            });
+                            try {
+                                start_worker(message.name, {
+                                    type: "forwarded_init",
+                                    port: message.port,
+                                });
+                            }
+                            catch (error) {
+                                void finish(error);
+                            }
                             break;
                         case "boot_console_write":
                             boot_console_write(message.message);
@@ -236,7 +240,10 @@ export async function spawnMachine(options) {
             workers.add(worker);
             worker.post(init, init.type === "forwarded_init" ? [init.port] : undefined);
         };
-        const spawn_worker = (fn, arg, name, user) => {
+        const spawn_worker = (fn, arg, name, user, copy_user_memory) => {
+            // COPY originates only from userspace clone in a worker; never block the
+            // browser's main agent waiting for a memory snapshot.
+            assert(!copy_user_memory);
             start_worker(name, {
                 type: "init",
                 fn,
@@ -244,7 +251,9 @@ export async function spawnMachine(options) {
                 vmlinux,
                 memory: wasm_memory,
                 user,
+                user_copy_status: null,
             });
+            return 0;
         };
         const unavailable = () => {
             throw new Error("not available on main thread");

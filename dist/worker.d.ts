@@ -6,6 +6,8 @@ export interface InitMessage {
     vmlinux: WebAssembly.Module;
     memory: WebAssembly.Memory;
     user: UserContext | null;
+    /** One-shot user-memory copy result: 0 pending, 1 complete, negative errno. */
+    user_copy_status: Int32Array<SharedArrayBuffer> | null;
 }
 export interface ForwardedInitMessage {
     type: "forwarded_init";

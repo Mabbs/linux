@@ -2,11 +2,13 @@
 
 /bin/busybox --install -s
 
-mkdir -p /dev /proc /sys /tmp
+mkdir -p /dev /proc /sys /tmp /home
 chmod 1777 /tmp
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts
 hostname Mayx-Blog
 export PS1='\[\e[32m\]╭─\[\e[1;32m\]\u@\h \[\e[0m\][\A] \[\e[1;31m\][\[\e[33m\]\w\[\e[1;31m\]]\n\[\e[0;32m\]╰─\[\e[0m\]\$ '
 export TZ=CST-8

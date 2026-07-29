@@ -112,7 +112,6 @@ function italic_special(str,    out, i, len, ch, j, next_ch, content) {
             if (i == 1 || substr(str, i-1, 1) == "|") {
                 j = i + 1
                 while (j <= len && substr(str, j, 1) != "*") j++
-                # FIX: 增加 j > i+1 保证内容非空，"**"/"****" 不再被破坏
                 if (j <= len && j > i + 1) {
                     next_ch = (j == len) ? "" : substr(str, j+1, 1)
                     if (j == len || next_ch != "|") {
@@ -134,20 +133,15 @@ function italic_special(str,    out, i, len, ch, j, next_ch, content) {
 function expand_code(str, code_arr, cnt,    i, tag, start, prefix, j, ch, active, replace) {
     for (i = 0; i < cnt; i++) {
         tag = P_CODE_MARK i P_CODE_MARK
-        # 可能同一占位符出现多次（一般不会，但安全起见处理）
         while ((start = index(str, tag)) > 0) {
             prefix = substr(str, 1, start-1)
-
-            # 从后向前扫描，收集最后一个 P_RESET 之后的所有样式标记
             active = ""
             for (j = length(prefix); j > 0; j--) {
                 ch = substr(prefix, j, 1)
                 if (ch == P_RESET) break
                 if (index(STYLE_START_MARKS, ch) != 0)
-                    active = ch active       # 保持从左到右的顺序
+                    active = ch active
             }
-
-            # 核心修正：代码后先 RESET，再恢复外层样式
             replace = active P_DIM P_YELLOW code_arr[i] P_RESET active
             str = substr(str, 1, start-1) replace substr(str, start+length(tag))
         }
@@ -181,7 +175,7 @@ function inline_highlight(str,    cnt, code_arr, left, mid, right, text, url, al
               P_DIM "(" P_CYAN url P_RESET P_DIM ")" P_RESET right
     }
 
-    # 3. 链接 [...](...)
+    # 3. 链接 [...](...) → OSC 8 超链接 + 下划线
     while (match(str, /\[[^]]*\]\([^)]*\)/)) {
         left  = substr(str, 1, RSTART-1)
         mid   = substr(str, RSTART, RLENGTH)
@@ -192,7 +186,13 @@ function inline_highlight(str,    cnt, code_arr, left, mid, right, text, url, al
         url_start = index(mid, "(") + 1
         url_end   = index(mid, ")") - 1
         url = substr(mid, url_start, url_end - url_start + 1)
-        str = left P_UNDERLINE text P_RESET P_DIM "(" P_CYAN url P_RESET P_DIM ")" P_RESET right
+
+        # 如果不是以 https:// 开头，补上基础 URL
+        if (url !~ /^https:\/\//) {
+            url = "https://mabbs.github.io" url
+        }
+
+        str = left P_UNDERLINE ESC "]8;;" url ESC "\\" text ESC "]8;;" ESC "\\" P_RESET right
     }
 
     # 4. 粗体 **...** 和 __...__

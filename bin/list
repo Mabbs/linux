@@ -12,7 +12,7 @@ BOLD='\033[1m'
 RESET='\033[0m'
 
 # 如果缓存不存在则获取
-if [ ! -f /tmp/articles ]; then
+if [ ! -s /tmp/articles ]; then
     fetch_articles
 fi
 

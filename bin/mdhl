@@ -20,11 +20,11 @@ BEGIN {
 
     # ---------- 占位符（不可见控制字符，永不与 Markdown 冲突）----------
     P_RESET     = "\001"
-    P_BOLD      = "\002"
+    P_BOLD      = "\002"   # 加粗字面(仅字面, 用于图片标签等)
     P_DIM       = "\003"
     P_ITALIC    = "\004"
     P_UNDERLINE = "\005"
-    P_STRIKE    = "\006"
+    P_STRIKE    = "\006"   # 删除线 = STRIKE+DIM+RED (合并为单占位符, 见 STYLE_ANSI)
     P_RED       = "\007"
     P_GREEN     = "\010"
     P_YELLOW    = "\013"   # \013 = VT
@@ -33,13 +33,31 @@ BEGIN {
     P_CYAN      = "\017"   # \017 = SI
     P_WHITE     = "\020"   # \020 = DLE
     P_CODE_MARK = "\023"   # \023 = DC3 用于代码保护
+    P_BOLDYEL   = "\024"   # 粗体文本 = BOLD+YELLOW (合并, 支持正确嵌套)
+    P_CODEYEL   = "\025"   # 行内代码 = DIM+YELLOW (合并, 支持正确嵌套)
 
-    STYLE_START_MARKS = P_BOLD P_DIM P_ITALIC P_UNDERLINE P_STRIKE \
-                        P_RED P_GREEN P_YELLOW P_BLUE P_MAGENTA P_CYAN P_WHITE
+    # 成组样式合并为单个占位符, 保证 LIFO 弹栈与语义一致(修复嵌套时外层样式泄漏)
+    STYLE_ANSI[P_BOLD]      = BOLD
+    STYLE_ANSI[P_BOLDYEL]   = BOLD YELLOW
+    STYLE_ANSI[P_ITALIC]    = ITALIC
+    STYLE_ANSI[P_UNDERLINE] = UNDERLINE
+    STYLE_ANSI[P_STRIKE]    = STRIKE DIM RED
+    STYLE_ANSI[P_CODEYEL]   = DIM YELLOW
+    STYLE_ANSI[P_RED]       = RED
+    STYLE_ANSI[P_GREEN]     = GREEN
+    STYLE_ANSI[P_YELLOW]    = YELLOW
+    STYLE_ANSI[P_BLUE]      = BLUE
+    STYLE_ANSI[P_MAGENTA]   = MAGENTA
+    STYLE_ANSI[P_CYAN]      = CYAN
+    STYLE_ANSI[P_WHITE]     = WHITE
+    STYLE_ANSI[P_DIM]       = DIM
+
+    STYLE_START_MARKS = P_BOLD P_BOLDYEL P_ITALIC P_UNDERLINE P_STRIKE P_CODEYEL \
+                        P_RED P_GREEN P_YELLOW P_BLUE P_MAGENTA P_CYAN P_WHITE P_DIM
 
     # ================================================================
     # 最大行长度限制，0 表示不限制。
-    MAX_LINE_LENGTH = 1024
+    MAX_LINE_LENGTH = 5000
     # ================================================================
 }
 
@@ -127,7 +145,7 @@ function expand_code(str, code_arr, cnt,    i, tag, start, prefix, j, ch, active
                 if (index(STYLE_START_MARKS, ch) != 0)
                     active = ch active
             }
-            replace = active P_DIM P_YELLOW code_arr[i] P_RESET active
+            replace = active P_CODEYEL code_arr[i] P_RESET
             str = substr(str, 1, start-1) replace substr(str, start+length(tag))
         }
     }
@@ -185,16 +203,16 @@ function inline_highlight(str,    cnt, code_arr, left, mid, right, text, url, al
         left  = substr(str, 1, RSTART-1)
         mid   = substr(str, RSTART+2, RLENGTH-4)
         right = substr(str, RSTART+RLENGTH)
-        str = left P_BOLD P_YELLOW mid P_RESET right
+        str = left P_BOLDYEL mid P_RESET right
     }
     while (match(str, /__[^_]+__/)) {
         left  = substr(str, 1, RSTART-1)
         mid   = substr(str, RSTART+2, RLENGTH-4)
         right = substr(str, RSTART+RLENGTH)
-        str = left P_BOLD P_YELLOW mid P_RESET right
+        str = left P_BOLDYEL mid P_RESET right
     }
 
-    # 5. 普通斜体 *...*
+    # 5. 普通斜体 *...*（行首、| 之后、表格单元格内的 *...* 均由此统一处理）
     while (match(str, /\*[^*]+\*/)) {
         left  = substr(str, 1, RSTART-1)
         mid   = substr(str, RSTART+1, RLENGTH-2)
@@ -207,27 +225,45 @@ function inline_highlight(str,    cnt, code_arr, left, mid, right, text, url, al
         left  = substr(str, 1, RSTART-1)
         mid   = substr(str, RSTART+2, RLENGTH-4)
         right = substr(str, RSTART+RLENGTH)
-        str = left P_STRIKE P_DIM P_RED mid P_RESET right
+        str = left P_STRIKE mid P_RESET right
     }
 
     # 7. 智能还原代码（带样式继承）
     if (cnt > 0)
         str = expand_code(str, code_arr, cnt)
 
-    # 8. 占位符 → 真实 ANSI
-    gsub(P_RESET,     RESET,     str)
-    gsub(P_BOLD,      BOLD,      str)
-    gsub(P_DIM,       DIM,       str)
-    gsub(P_ITALIC,    ITALIC,    str)
-    gsub(P_UNDERLINE, UNDERLINE, str)
-    gsub(P_STRIKE,    STRIKE,    str)
-    gsub(P_RED,       RED,       str)
-    gsub(P_GREEN,     GREEN,     str)
-    gsub(P_YELLOW,    YELLOW,    str)
-    gsub(P_BLUE,      BLUE,      str)
-    gsub(P_MAGENTA,   MAGENTA,   str)
-    gsub(P_CYAN,      CYAN,      str)
-    gsub(P_WHITE,     WHITE,     str)
+    # 8. 占位符 → 真实 ANSI（栈式还原, 正确支持样式嵌套）
+    str = convert(str)
 
     return str
+}
+
+# ─── 栈式占位符转换器 ────────────────────────────────
+# 每个样式起始占位符压栈并输出其 ANSI; P_RESET 弹出栈顶并回退到剩余样式,
+# 从而内层样式关闭后外层样式继续生效(修复旧版用全局 RESET 导致的外层泄漏)。
+function convert(str,    out, i, ch, n, k, stk) {
+    out = ""
+    n = 0
+    i = 1
+    while (i <= length(str)) {
+        ch = substr(str, i, 1)
+        if (ch == P_RESET) {
+            if (n > 0) {
+                n--
+                out = out RESET
+                for (k = 1; k <= n; k++) out = out stk[k]
+            } else {
+                out = out RESET
+            }
+        } else if (ch in STYLE_ANSI) {
+            n++
+            stk[n] = STYLE_ANSI[ch]
+            out = out stk[n]
+        } else {
+            out = out ch
+        }
+        i++
+    }
+    if (n > 0) out = out RESET
+    return out
 }

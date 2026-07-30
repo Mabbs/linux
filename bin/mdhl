@@ -132,20 +132,12 @@ BEGIN {
     print inline_highlight(rawline)
 }
 
-# ─── 智能代码还原：正确继承外层样式并关闭代码样式 ──────────
-function expand_code(str, code_arr, cnt,    i, tag, start, prefix, j, ch, active, replace) {
+# ─── 智能代码还原：把代码占位符还原为代码样式 ──────────
+function expand_code(str, code_arr, cnt,    i, tag, start, replace) {
     for (i = 0; i < cnt; i++) {
         tag = P_CODE_MARK i P_CODE_MARK
         while ((start = index(str, tag)) > 0) {
-            prefix = substr(str, 1, start-1)
-            active = ""
-            for (j = length(prefix); j > 0; j--) {
-                ch = substr(prefix, j, 1)
-                if (ch == P_RESET) break
-                if (index(STYLE_START_MARKS, ch) != 0)
-                    active = ch active
-            }
-            replace = active P_CODEYEL code_arr[i] P_RESET
+            replace = P_CODEYEL code_arr[i] P_RESET
             str = substr(str, 1, start-1) replace substr(str, start+length(tag))
         }
     }

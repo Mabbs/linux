@@ -39,7 +39,8 @@
     .topbar {
       display: flex;
       align-items: center;
-      gap: 16px;
+      flex-wrap: wrap;
+      gap: 10px 16px;
       padding: 10px 20px;
       border-bottom: 1px solid var(--border);
       background: var(--bg);
@@ -160,8 +161,9 @@
   </div>
   <script type="module">
     import { FitAddon, Terminal, WebglAddon } from "./vendor/xterm/dist.js";
-    import { consoleDevice, entropyDevice, spawnMachine, ethernetDevice, ethernetNetwork } from "./vendor/linux/dist/index.js";
+    import { consoleDevice, entropyDevice, spawnMachine, ethernetDevice, ethernetNetwork, fileSystemDevice } from "./vendor/linux/dist/index.js";
     import { fetchInternetGateway, proxyToGuest } from "./fetch-network.js";
+    import { createHostDirectoryFS, HOSTFS_SUPPORTED } from "./hostfs.js";
 
     // 反向代理需要的全局状态，提前声明以便下面的 message 监听器(在初始化前就绑定)可访问。
     let gateway = null;       // fetchInternetGateway 返回的网关实例
@@ -173,6 +175,73 @@
       statusEl.className = "status-dot " + state;
       statusText.textContent = text;
     };
+
+    // ---- 本地文件夹挂载（virtio-fs + File System Access API）----
+    const HOSTFS_TAG = "hostfs";
+
+    let hostfs = null;         // createHostDirectoryFS() 的控制器
+    let hostfsMounted = false; // 本地文件夹已绑定（detach 之前都算挂着）
+    let hostfsName = "";
+    let hostfsReadOnly = false;
+
+    // 挂载后端：仅在支持 File System Access API 的 Chromium 内核浏览器里创建。
+    // 这里只创建「空 root」的 virtio-fs 后端；
+    if (HOSTFS_SUPPORTED) {
+      hostfs = createHostDirectoryFS();
+    }
+
+    // ---- 命令式挂载：暴露给宿主 jsexec 调用的 API ----
+
+    // 把宿主侧错误转成一句人话，避免终端刷一堆堆栈。
+    function describeError(err) {
+      const msg = String((err && err.message) || err || "未知错误");
+      return msg.length > 120 ? msg.slice(0, 117) + "…" : msg;
+    }
+
+    // 挂载：在用户手势下弹出文件夹选择器，
+    // 只负责把本地目录绑进 virtio-fs 后端；
+    window.mountHostFolder = async function () {
+      if (!hostfs) return "hostfs 未初始化（浏览器不支持 File System Access API）";
+      if (hostfsMounted) {
+        return `已绑定 ${hostfsName} → /mnt/host，先执行 umount_host 再换`;
+      }
+      let directory;
+      try {
+        directory = await window.showDirectoryPicker({
+          id: "wasm-linux-hostfs",
+          mode: "readwrite",
+          startIn: "documents",
+        });
+      } catch (err) {
+        if (err && err.name === "AbortError") return "已取消选择";
+        return "打开文件夹失败：" + describeError(err);
+      }
+      try {
+        const info = await hostfs.attach(directory);
+        hostfsName = info.name;
+        hostfsReadOnly = info.readOnly;
+        hostfsMounted = true;
+        return "ok"
+      } catch (err) {
+        return "挂载失败：" + describeError(err);
+      }
+    };
+
+    // 卸载：把内存里的改动写回本地磁盘（detach）
+    window.unmountHostFolder = async function () {
+      if (!hostfs) return "hostfs 未初始化";
+      if (!hostfsMounted) return "当前没有绑定本地文件夹";
+      try {
+        await hostfs.detach();
+      } catch (err) {
+        return "卸载时写回改动失败：" + describeError(err);
+      }
+      hostfsMounted = false;
+      hostfsName = "";
+      hostfsReadOnly = false;
+      return "ok";
+    };
+
 
     const term = new Terminal({
       convertEol: true,
@@ -318,15 +387,20 @@
       throw err;
     }
 
+    const devices = [
+      new consoleDevice(stdin, stdout),
+      new entropyDevice(),
+      new ethernetDevice(network)
+    ];
+    if (hostfs) {
+      devices.push(new fileSystemDevice(hostfs.fs, { tag: HOSTFS_TAG, cache: true }));
+    }
+
     try {
       const machine = await spawnMachine({
         cpus: Math.min(8, navigator.hardwareConcurrency),
         cmdline: "quiet",
-        devices: [
-          new consoleDevice(stdin, stdout),
-          new entropyDevice(),
-          new ethernetDevice(network)
-        ],
+        devices,
         initcpio: new Uint8Array(initcpio),
       });
 
@@ -340,6 +414,11 @@
       throw err;
     }
     setStatus("booted", "ready");
+
+    if (hostfs) {
+      // 关页面前尽量把内存里尚未写回的改动落盘，避免丢数据。
+      window.addEventListener("pagehide", () => { hostfs.flush().catch(() => { }); });
+    }
   </script>
 </body>
 

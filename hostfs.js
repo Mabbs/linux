@@ -392,6 +392,12 @@ class BrowserFS {
     });
   }
 
+  // OPFS / FSA 在 writable 关闭时即提交每次写入，所以 write 返回时文件已持久，
+  // flush 与 fsync 没有剩余工作要做。
+  async flush() { }
+
+  async fsync() { }
+
   async opendir(node) {
     const current = this.#as_node(node);
     if (current.handle && current.handle.kind !== "directory") {

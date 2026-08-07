@@ -160,7 +160,7 @@
   </div>
   <script type="module">
     import { FitAddon, Terminal, WebglAddon } from "./vendor/xterm/dist.js";
-    import { consoleDevice, entropyDevice, spawnMachine, ethernetDevice, ethernetNetwork } from "./dist/index.js";
+    import { consoleDevice, entropyDevice, spawnMachine, ethernetDevice, ethernetNetwork } from "./vendor/linux/dist/index.js";
     import { fetchInternetGateway, proxyToGuest } from "./fetch-network.js";
 
     // 反向代理需要的全局状态，提前声明以便下面的 message 监听器(在初始化前就绑定)可访问。

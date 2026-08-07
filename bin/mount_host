@@ -1,0 +1,10 @@
+#!/bin/sh
+echo "请在弹出的浏览器窗口里选择本地文件夹（若没有弹出，点击页面任意处）"
+result=$(echo 'window.mountHostFolder()' | jsexec)
+if [ "$result" != "ok" ]; then
+  echo "$result"
+  exit 1
+fi
+mkdir -p /mnt/host
+mount -t virtiofs hostfs /mnt/host
+echo "已绑定本地文件夹 → /mnt/host"

@@ -1,0 +1,9 @@
+#!/bin/sh
+echo "正在解绑本地文件夹..."
+result=$(echo 'window.unmountHostFolder()' | jsexec)
+if [ "$result" != "ok" ]; then
+  echo "$result"
+  exit 1
+fi
+umount /mnt/host
+echo "已解绑本地文件夹 → /mnt/host"

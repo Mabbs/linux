@@ -431,10 +431,6 @@
     }
     setStatus("booted", "ready");
 
-    if (hostfs) {
-      // 关页面前尽量把内存里尚未写回的改动落盘，避免丢数据。
-      window.addEventListener("pagehide", () => { hostfs.flush().catch(() => { }); });
-    }
   </script>
 </body>
 

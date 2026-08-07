@@ -342,24 +342,40 @@
 
     const stdin = new ReadableStream({
       start(controller) {
-        window._stdin = controller;
-        term.onData((data) => controller.enqueue(data));
+        term.onData((data) => {
+          controller.enqueue(data);
+        });
       },
     }).pipeThrough(new TextEncoderStream());
 
-    // Serialize all terminal writes through a queue to prevent output interleaving
-    let writeChain = Promise.resolve();
-    const enqueueWrite = (chunk) => {
-      return new Promise(resolve => {
-        writeChain = writeChain.then(() => new Promise(r => term.write(chunk, r))).then(resolve);
-      });
-    };
+    // xterm consumes writes asynchronously; awaiting its completion callback
+    // turns the writable stream into true backpressure, so a chatty guest
+    // fills its own virtio console queue instead of buffering inside xterm.
+    const toTerminal = (data) => new Promise((resolve) => term.write(data, resolve));
 
     const stdout = new WritableStream({
-      async write(chunk) { await enqueueWrite(chunk); }
+      write(chunk) {
+        return toTerminal(chunk);
+      },
     });
-    const stdout2 = new WritableStream({
-      async write(chunk) { await enqueueWrite(chunk); }
+
+    const ttyConsole = consoleDevice(stdin, stdout);
+
+    // Push the terminal's dimensions into the virtio console config, so the
+    // guest sees the new size and delivers SIGWINCH to the foreground
+    // process. The machine reads the config at boot, so seed it before
+    // spawnMachine; onResize covers every later fit.
+    const resizeConsole = () => ttyConsole.resize(term.cols, term.rows);
+    term.onResize(resizeConsole);
+    window.onresize = () => termFit.fit();
+    resizeConsole();
+
+    // The virtio console claims stdout; the kernel's pre-console output must
+    // go somewhere that isn't already locked, so it gets its own stream.
+    const bootOut = new WritableStream({
+      write(chunk) {
+        return toTerminal(chunk);
+      },
     });
 
     const initcpio = await fetch("initramfs.cpio").then((res) => res.ok ? res.arrayBuffer() : null);
@@ -388,12 +404,12 @@
     }
 
     const devices = [
-      new consoleDevice(stdin, stdout),
-      new entropyDevice(),
-      new ethernetDevice(network)
+      ttyConsole,
+      entropyDevice(),
+      ethernetDevice(network)
     ];
     if (hostfs) {
-      devices.push(new fileSystemDevice(hostfs.fs, { tag: HOSTFS_TAG, cache: true }));
+      devices.push(fileSystemDevice(hostfs.fs, { tag: HOSTFS_TAG, cache: true }));
     }
 
     try {
@@ -404,7 +420,7 @@
         initcpio: new Uint8Array(initcpio),
       });
 
-      machine.bootConsole.pipeTo(stdout2);
+      machine.bootConsole.pipeTo(bootOut);
     } catch (err) {
       if (err instanceof RangeError && err.message.includes('Out of memory')) {
         navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));

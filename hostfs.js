@@ -392,12 +392,6 @@ class BrowserFS {
     });
   }
 
-  // OPFS / FSA 在 writable 关闭时即提交每次写入，所以 write 返回时文件已持久，
-  // flush 与 fsync 没有剩余工作要做。
-  async flush() { }
-
-  async fsync() { }
-
   async opendir(node) {
     const current = this.#as_node(node);
     if (current.handle && current.handle.kind !== "directory") {
@@ -613,19 +607,6 @@ class BrowserFS {
 
   // ---- 上游未实现、但本仓库需要的可选操作 ------------------------------
 
-  statfs() {
-    return {
-      blocks: 1n << 20n,
-      blocksFree: 1n << 19n,
-      blocksAvailable: 1n << 19n,
-      files: 1n << 20n,
-      filesFree: 1n << 19n,
-      blockSize: 4096,
-      fragmentSize: 4096,
-      nameLength: MAX_NAME_BYTES,
-    };
-  }
-
   access(node, mask) {
     this.#as_node(node);
     // 只读绑定时，任何需要写入的访问都拒绝。
@@ -644,8 +625,8 @@ export const HOSTFS_SUPPORTED =
  * 创建一个「可延迟绑定本地目录」的 virtio-fs 后端。
  *
  * @param {{ onChange?: (state: object) => void }} [options] 预留，当前未使用。
- * @returns 包含 `fs`（交给 fileSystemDevice）、`attach`、`detach`、`flush`、
- *          `getState` 的控制器。
+ * @returns 包含 `fs`（交给 fileSystemDevice）、`attach`、`detach`、`getState`
+ *          的控制器。
  */
 export function createHostDirectoryFS(options = {}) {
   const fs = new BrowserFS();

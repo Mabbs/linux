@@ -320,6 +320,7 @@
 
     try {
       const machine = await spawnMachine({
+        cpus: Math.min(8, navigator.hardwareConcurrency),
         cmdline: "quiet",
         devices: [
           new consoleDevice(stdin, stdout),

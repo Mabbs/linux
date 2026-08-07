@@ -1,9 +1,12 @@
 #!/bin/sh
 echo "正在解绑本地文件夹..."
+umount /mnt/host || {
+  echo "解绑失败，请检查设备是否正在使用中"
+  exit 1
+}
 result=$(echo 'window.unmountHostFolder()' | jsexec)
 if [ "$result" != "ok" ]; then
   echo "$result"
   exit 1
 fi
-umount /mnt/host
 echo "已解绑本地文件夹 → /mnt/host"

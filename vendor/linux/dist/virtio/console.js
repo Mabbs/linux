@@ -36,8 +36,15 @@ export function consoleDevice(input, output) {
     // console port instead of being dropped.
     const receive_chains = [];
     const pending_input = [];
+    let guest_ready = false;
+    function reset() {
+        // Receive descriptors belong to the old queue, but host input belongs to
+        // the console and must survive the reset Linux performs during probing.
+        receive_chains.length = 0;
+        guest_ready = false;
+    }
     function flush_input() {
-        while (receive_chains.length > 0 && pending_input.length > 0) {
+        while (guest_ready && receive_chains.length > 0 && pending_input.length > 0) {
             const chain = receive_chains.shift();
             const chunk = pending_input[0];
             const [desc, trailing] = chain;
@@ -69,6 +76,13 @@ export function consoleDevice(input, output) {
         pumping ??= pump_input().catch(console.error);
     }
     async function notify_output(queue) {
+        // Linux exposes the legacy console receive queue before hvc0 is ready to
+        // consume it. Its first output kick proves that the console handoff has
+        // completed, so input queued before boot is safe to release from here.
+        if (!guest_ready) {
+            guest_ready = true;
+            flush_input();
+        }
         for (const chain of queue) {
             let n = 0;
             for (const { array, writable } of chain) {
@@ -81,7 +95,10 @@ export function consoleDevice(input, output) {
     }
     const controller = new VirtioController({ deviceId: 3, features: Features.SIZE, config: config_bytes }, {
         queues: [reader ? notify_input : () => { }, notify_output],
+        reset,
         stop() {
+            reset();
+            pending_input.length = 0;
             reader_cancellation ??= reader?.cancel();
             writer_abortion ??= writer?.abort();
         },

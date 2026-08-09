@@ -50,12 +50,16 @@ class PackedVirtqueue {
     #used_wrap = true;
     #used_idx = 0;
     #avail_idx = 0;
+    #valid = true;
     constructor(memory, size, desc_addr, on_release) {
         assert(size !== 0);
         this.#memory = memory;
         this.#size = size;
         this.#desc_addr = desc_addr;
         this.#on_release = on_release;
+    }
+    invalidate() {
+        this.#valid = false;
     }
     #descriptor(index) {
         const desc = VirtqDescriptor.get(new DataView(this.#memory.buffer), this.#desc_addr + VirtqDescriptor.size * index);
@@ -107,7 +111,7 @@ class PackedVirtqueue {
     }
     *[Symbol.iterator]() {
         let chain;
-        while ((chain = this.#pop()))
+        while (this.#valid && (chain = this.#pop()))
             yield chain;
     }
     #advance() {
@@ -125,6 +129,8 @@ class PackedVirtqueue {
         return index;
     }
     #release(id, skip, written) {
+        if (!this.#valid)
+            return;
         const desc = VirtqDescriptor.get(new DataView(this.#memory.buffer), this.#desc_addr + VirtqDescriptor.size * this.#used_idx);
         const avail = (desc.flags & DescriptorFlags.AVAIL) !== 0;
         const used = (desc.flags & DescriptorFlags.USED) !== 0;
@@ -235,6 +241,10 @@ export class VirtioController {
                     .catch(() => { });
                 return completion.promise;
             },
+            reset: () => {
+                if (!closed)
+                    driver.reset?.();
+            },
             close: start_close,
         };
         const device = {};
@@ -311,6 +321,7 @@ export function virtio_imports({ memory, devices, trigger_irq, on_error, }) {
             const device = states[dev];
             assert(device);
             const state = queue_state(device, vq);
+            state.queue?.invalidate();
             // Interrupt once per synchronous batch of released chains.
             let armed = false;
             const queue = new PackedVirtqueue(memory, size, desc_addr >>> 0, () => {
@@ -331,8 +342,23 @@ export function virtio_imports({ memory, devices, trigger_irq, on_error, }) {
             const device = states[dev];
             assert(device);
             const state = device.queues[vq];
-            assert(state?.queue);
+            state?.queue?.invalidate();
+            if (!state)
+                return;
             state.queue = undefined;
+            state.pending = false;
+        },
+        reset(dev) {
+            const device = states[dev];
+            assert(device);
+            for (const state of device.queues) {
+                if (!state)
+                    continue;
+                state.queue?.invalidate();
+                state.queue = undefined;
+                state.pending = false;
+            }
+            device.device.reset();
         },
         setup(dev, config_irq, config_addr, config_len) {
             const address = config_addr >>> 0;

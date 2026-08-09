@@ -162,6 +162,9 @@ export function ethernetDevice(network, { macAddress = random_mac() } = {}) {
     const config = Uint8Array.from(macAddress);
     controller = new VirtioController({ deviceId: 1, features: 1n << 5n, config }, {
         queues: [receive, transmit],
+        reset() {
+            receive_buffers.length = 0;
+        },
         close() {
             port.close();
             receive_buffers.length = 0;

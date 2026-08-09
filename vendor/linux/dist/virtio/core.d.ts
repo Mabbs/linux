@@ -44,6 +44,8 @@ export type VirtqueueHandler = (queue: Virtqueue, controller: VirtioController) 
 export interface VirtioDriver {
     /** One handler per virtqueue. */
     readonly queues: readonly VirtqueueHandler[];
+    /** Drops guest-owned protocol state when the guest resets the device. */
+    reset?(): void;
     /** Synchronously starts cancellation needed to unblock queue handlers. */
     stop?(): void;
     /** Called after in-flight queue handlers settle when the device is closed. */
@@ -55,6 +57,7 @@ interface TransportDevice {
     readonly config: Uint8Array;
     attach(get_config: () => Uint8Array, raise_config: RaiseConfigInterrupt): void;
     notify(vq: number, queue: Virtqueue): void | PromiseLike<void>;
+    reset(): void;
     close(): Promise<void>;
 }
 declare const transport_device: unique symbol;

@@ -73,6 +73,7 @@ export interface Imports {
     virtio: {
         set_features(dev: number, features: bigint): void;
         setup(dev: number, config_irq: number, config_addr: number, config_len: number): void;
+        reset(dev: number): void;
         enable_vring(dev: number, vq: number, size: number, desc_addr: number, irq: number): void;
         disable_vring(dev: number, vq: number): void;
         notify(dev: number, vq: number): void;

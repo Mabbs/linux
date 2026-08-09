@@ -393,6 +393,7 @@ function start({ fn, arg, vmlinux, memory, user: initial_user_context, user_copy
         virtio: {
             set_features: unavailable,
             setup: unavailable,
+            reset: unavailable,
             enable_vring: unavailable,
             disable_vring: unavailable,
             notify: unavailable,

@@ -37,7 +37,7 @@ export interface Imports {
         memory: WebAssembly.Memory;
     };
     boot: {
-        get_devicetree(buf: number, size: number): void;
+        get_devicetree(buf: number, size: number): number;
         get_initramfs(buf: number, size: number): number;
     };
     kernel: {

@@ -99,7 +99,7 @@
     .status-dot {
       position: absolute;
       top: 10px;
-      right: 14px;
+      right: 40px;
       z-index: 10;
       display: flex;
       align-items: center;
@@ -374,7 +374,7 @@
     // go somewhere that isn't already locked, so it gets its own stream.
     const bootOut = new WritableStream({
       write(chunk) {
-        return toTerminal(chunk);
+        return toTerminal(new TextEncoder().encode("\x1b[2m" + new TextDecoder().decode(chunk) + "\x1b[0m"));
       },
     });
 
@@ -421,6 +421,12 @@
       });
 
       machine.bootConsole.pipeTo(bootOut);
+      machine.closed.then(() => {
+        setStatus("failed", "poweroff");
+      }).catch(err => {
+        term.write("\x1b[31mMachine closed: " + (err && err.message ? err.message : err) + "\x1b[0m\n");
+        setStatus("failed", "machine closed");
+      });
     } catch (err) {
       if (err instanceof RangeError && err.message.includes('Out of memory')) {
         navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));

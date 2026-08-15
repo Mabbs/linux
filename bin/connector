@@ -1,0 +1,78 @@
+#!/bin/sh
+#
+# connector —— 在 guest（浏览器里的 Linux）内运行的点对点连接脚本
+#
+# 用法（在 guest 终端里执行）：
+#   connector                 不带参数 → 生成 OFFER，自动配置本机 IP，打印 token
+#   connector '<TOKEN>'       带对端 token → 自动连接（connectToPeer 按 token 内角色区分
+#                                            offer/answer），配置本机 IP，打印结果
+#
+# 依赖：guest 内已存在 jsexec（调宿主页面的 WebRTC 桥）与 ip（busybox）。
+# 原理：jsexec 调 showLocalSdp()/connectToPeer() 拿到 SDP token 与
+#       输出里的 P2P_LOCAL_IP=...，再用 ip 命令给 eth0 配置该随机 IP。
+# 两台机器需在同一局域网、未开 AP 隔离。
+
+if [ "$#" -gt 1 ]; then
+    echo "用法："
+    echo "  connector                 生成 OFFER 并打印 token"
+    echo "  connector '<TOKEN>'       连接对端"
+    exit 1
+fi
+
+GATEWAY_IP="10.0.2.2"
+
+# 从多行文本里抓出 SDP token（gzip 压缩后再 base64 的单行，可能比普通 base64 短）
+extract_token() {
+    printf '%s\n' "$1" | grep -E '^[A-Za-z0-9+/]{20,}={0,2}$' | tail -1
+}
+
+# 从多行文本里抓出 P2P_LOCAL_IP= 后的 IP
+extract_ip() {
+    printf '%s\n' "$1" | grep '^P2P_LOCAL_IP=' | tail -1 | cut -d= -f2
+}
+
+# 给本机 eth0 配置指定 IP（保持默认路由指向网关 10.0.2.2）
+apply_ip() {
+    _ip="$1"
+    ip addr flush dev eth0 2>/dev/null
+    ip addr add "$_ip"/24 dev eth0
+    ip route add default via "$GATEWAY_IP" dev eth0 2>/dev/null
+    echo "  -> 本机 eth0 已配置 IP: $_ip (默认路由 -> $GATEWAY_IP)"
+}
+
+TOKEN="${1:-}"
+
+if [ -z "$TOKEN" ]; then
+    # ---- 无参数：生成 OFFER ----
+    echo "[1/2] 生成 OFFER（宿主页面正在生成随机 IP 与 WebRTC 信令）..."
+    OUT=$(echo "showLocalSdp()" | jsexec)
+    IP=$(extract_ip "$OUT")
+    TOK=$(extract_token "$OUT")
+    if [ -z "$TOK" ] || [ -z "$IP" ]; then
+        echo "错误：未能从 showLocalSdp() 的输出中解析出 token / IP。原始输出："
+        echo "$OUT"
+        exit 1
+    fi
+    apply_ip "$IP"
+    echo "[2/2] 把下面这段命令复制给对端，让对端执行："
+    echo ""
+    echo "connector '$TOK'"
+    echo ""
+
+else
+    # ---- 有 token：自动连接（角色由 token 内字段决定）----
+    echo "[1/2] 连接对端..."
+    # token 本身只含 base64 字符，用单引号包住安全
+    OUT=$(echo "connectToPeer('$TOKEN')" | jsexec)
+    IP=$(extract_ip "$OUT")
+    if [ -n "$IP" ]; then
+        apply_ip "$IP"
+    fi
+    echo "[2/2] 连接结果："
+    echo "$OUT"
+    # 若返回里还带一个新 token（说明本端是应答方，需把新 token 回传发起方）
+    NEWTOK=$(extract_token "$OUT")
+    if [ -n "$NEWTOK" ] && [ "$NEWTOK" != "$TOKEN" ]; then
+        echo "请把这段命令复制回发起方执行： connector '$NEWTOK'"
+    fi
+fi

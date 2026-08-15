@@ -139,10 +139,11 @@
             peerMac = Uint8Array.from(frame.subarray(6, 12));     // 仅从对端真实帧学习其 MAC
             if (bridgePort) { try { bridgePort.send(frame); } catch { } }
         };
+        dc.onopen = () => {
+            state = "connected";
+            console.log(connectedInfo());
+        };
     }
-
-    // 注意：本机 eth0 的 IP 配置不再由 JS 注入，改由 guest 内的 shell 脚本（p2p.sh）
-    // 通过 jsexec 拿到下方输出的 P2P_LOCAL_IP 后，自行执行 ip 命令完成。
 
     function waitIce(p, timeout = 4000) {
         return new Promise((resolve) => {
@@ -186,7 +187,7 @@
         const peer = peerIp
             ? ("对端随机 IP: " + peerIp + "  ——  用  ping " + peerIp + "  或  curl http://" + peerIp + "  互访")
             : "对端 IP 未知（信令未携带）";
-        // P2P_LOCAL_IP 供 guest 内 shell 脚本（p2p.sh）解析并配置本机 eth0
+        // P2P_LOCAL_IP 供 guest 内 shell 脚本解析并配置本机 eth0
         return "=== 已连接 ===\n" + local + "\n" + peer + "\nP2P_LOCAL_IP=" + myIp;
     }
 
@@ -198,6 +199,7 @@
         try { if (bridgePort && bridgePort.close) bridgePort.close(); } catch (e) { }
         pc = null; dc = null; bridgePort = null;
         myIp = null; peerIp = null; peerMac = null;
+        seen.clear();
         state = "idle";
         return "已重置 P2P 连接状态，可重新发起握手。";
     }
@@ -244,14 +246,14 @@
 
         if (meta.role === "offer") {
             // —— 本端作为 answerer ——
-            // 重试时先清理上一次可能残留的 pc / 交换机端口，避免端口泄漏与重复转发
             if (pc) resetP2p();
-            // peerIp 已从 offer 拿到（reset 会清空，这里用本次 token 重新设置），
-            // 生成本机 IP 时避开对端 IP，杜绝冲突
             if (meta.ip) peerIp = meta.ip;
             if (!myIp) myIp = randomGuestIp(peerIp);
             pc = new RTCPeerConnection({ iceServers: [] });
-            pc.ondatachannel = (ev) => { dc = ev.channel; attachBridge(); };
+            pc.ondatachannel = (ev) => {
+                dc = ev.channel;
+                attachBridge();  // attachBridge 内部已设置 dc.onopen
+            };
             await pc.setRemoteDescription({ type: "offer", sdp: remoteSdp });
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
@@ -260,14 +262,11 @@
             const out = await makeToken(pc.localDescription.sdp, "answer", myIp);
             state = "answering";
 
-            const ok = await waitDcOpen();
-            const tail = ok ? ("\n" + connectedInfo()) : "\n（answer 已生成，但对端尚未回连；待对端执行 connectToPeer 后本端会自动连通）";
-            // 本机 IP 在生成 answer 时即已确定，无论 DC 是否已开都先输出，确保 shell 能立即配置
+            // 立即返回 answer token，不等待 DataChannel 打开
             return (
                 "=== 本机 ANSWER token（复制后回传给对端，让其再执行一次 connectToPeer）===\n" +
                 out + "\n" +
-                "P2P_LOCAL_IP=" + myIp + "\n" +
-                tail
+                "P2P_LOCAL_IP=" + myIp + "\n"
             );
         }
 
@@ -289,5 +288,4 @@
 
     window.showLocalSdp = showLocalSdp;
     window.connectToPeer = connectToPeer;
-    window.resetP2p = resetP2p;
 })();

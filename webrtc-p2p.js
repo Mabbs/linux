@@ -190,10 +190,22 @@
         return "=== 已连接 ===\n" + local + "\n" + peer + "\nP2P_LOCAL_IP=" + myIp;
     }
 
+    // 复位：关闭 RTCPeerConnection / DataChannel / 交换机端口，状态回到 idle。
+    // 连接失败或需要重连时自动调用；
+    function resetP2p() {
+        try { if (dc && dc.readyState !== "closed") dc.close(); } catch (e) { }
+        try { if (pc) pc.close(); } catch (e) { }
+        try { if (bridgePort && bridgePort.close) bridgePort.close(); } catch (e) { }
+        pc = null; dc = null; bridgePort = null;
+        myIp = null; peerIp = null; peerMac = null;
+        state = "idle";
+        return "已重置 P2P 连接状态，可重新发起握手。";
+    }
+
     // ---- 函数 1：显示本机 SDP（作为 offerer）----
     async function showLocalSdp() {
         if (state === "offering" || state === "connected") {
-            return "当前已处于 " + state + " 状态；若要重建连接，请刷新页面。";
+            resetP2p(); // 上次可能未完成/失败，自动复位后重新发起
         }
         if (!window.__netdev) return "network 尚未就绪，请稍候重试。";
 
@@ -232,7 +244,11 @@
 
         if (meta.role === "offer") {
             // —— 本端作为 answerer ——
-            // peerIp 已从 offer 拿到，生成本机 IP 时避开对端 IP，杜绝冲突
+            // 重试时先清理上一次可能残留的 pc / 交换机端口，避免端口泄漏与重复转发
+            if (pc) resetP2p();
+            // peerIp 已从 offer 拿到（reset 会清空，这里用本次 token 重新设置），
+            // 生成本机 IP 时避开对端 IP，杜绝冲突
+            if (meta.ip) peerIp = meta.ip;
             if (!myIp) myIp = randomGuestIp(peerIp);
             pc = new RTCPeerConnection({ iceServers: [] });
             pc.ondatachannel = (ev) => { dc = ev.channel; attachBridge(); };
@@ -262,12 +278,16 @@
             myIp = randomGuestIp(peerIp);
         }
         await pc.setRemoteDescription({ type: "answer", sdp: remoteSdp });
-        state = "connected";
         const ok = await waitDcOpen();
-        if (!ok) return "已设置 answer，但 DataChannel 未在规定时间内打开，请检查两台机器是否在同一局域网。";
+        if (!ok) {
+            resetP2p(); // 连接失败自动复位，可直接重新发起握手
+            return "连接失败：DataChannel 未在规定时间内打开（已自动重置）。请确认两台机器在同一局域网、未开 AP 隔离，然后重新执行 offer / connectToPeer。";
+        }
+        state = "connected";
         return connectedInfo();
     }
 
     window.showLocalSdp = showLocalSdp;
     window.connectToPeer = connectToPeer;
+    window.resetP2p = resetP2p;
 })();

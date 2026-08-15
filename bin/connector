@@ -68,11 +68,15 @@ else
     if [ -n "$IP" ]; then
         apply_ip "$IP"
     fi
-    echo "[2/2] 连接结果："
-    echo "$OUT"
     # 若返回里还带一个新 token（说明本端是应答方，需把新 token 回传发起方）
     NEWTOK=$(extract_token "$OUT")
     if [ -n "$NEWTOK" ] && [ "$NEWTOK" != "$TOKEN" ]; then
-        echo "请把这段命令复制回发起方执行： connector '$NEWTOK'"
+        echo "[2/2] 请把这段命令复制回发起方执行： "
+        echo ""
+        echo "connector '$NEWTOK'"
+        echo ""
+    else
+        echo "[2/2] 连接结果："
+        echo "$OUT"
     fi
 fi

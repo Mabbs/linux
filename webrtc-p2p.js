@@ -7,15 +7,13 @@
 //   showLocalSdp()              —— 生成本机随机 IP + offer，打印单行 token
 //   connectToPeer('<token>')    —— 作为对端连接，打印回传 token / 连接成功信息
 //
-// 原理：把 ethernetNetwork 交换机的某个端口与 WebRTC DataChannel 对插，
+// 原理：把 network(ethernetNetwork 交换机)的某个端口与 WebRTC DataChannel 对插，
 // 形成一条「二层以太网隧道(L2 over WebRTC)」。两台机器各自自动生成随机 IP，
 // 经隧道互通；数据面纯局域网直连，无需 STUN/TURN，无服务器。
 //
-// 依赖（由 index.html 在初始化时挂到 window 上）：
-//   window.__netdev     —— ethernetNetwork() 实例
 
-(() => {
-    const GATEWAY_IP = "10.0.2.2";
+export function initP2p(network, gateway) {
+    const GATEWAY_IP = gateway.gatewayIp;
 
     let pc = null;        // RTCPeerConnection
     let dc = null;        // DataChannel
@@ -116,7 +114,6 @@
 
     // ---- 桥接：交换机端口 <-> DataChannel ----
     function attachBridge() {
-        const network = window.__netdev;
         if (!network) throw new Error("network 未就绪（页面尚未初始化完成）");
 
         bridgePort = network.addPort((frame) => {
@@ -187,8 +184,7 @@
         const peer = peerIp
             ? ("对端随机 IP: " + peerIp + "  ——  用  ping " + peerIp + "  或  curl http://" + peerIp + "  互访")
             : "对端 IP 未知（信令未携带）";
-        // P2P_LOCAL_IP 供 guest 内 shell 脚本解析并配置本机 eth0
-        return "=== 已连接 ===\n" + local + "\n" + peer + "\nP2P_LOCAL_IP=" + myIp;
+        return "=== 已连接 ===\n" + local + "\n" + peer;
     }
 
     // 复位：关闭 RTCPeerConnection / DataChannel / 交换机端口，状态回到 idle。
@@ -209,7 +205,6 @@
         if (state === "offering" || state === "connected") {
             resetP2p(); // 上次可能未完成/失败，自动复位后重新发起
         }
-        if (!window.__netdev) return "network 尚未就绪，请稍候重试。";
 
         myIp = randomGuestIp();
         pc = new RTCPeerConnection({ iceServers: [] }); // 纯局域网：不需要 STUN/TURN
@@ -222,12 +217,11 @@
 
         const token = await makeToken(pc.localDescription.sdp, "offer", myIp);
         state = "offering";
-
+        gateway.guestIp = myIp;
+        gateway._guestIpExplicit = true;
         return (
-            "=== 本机 OFFER token（复制后发给对端，让其执行 connectToPeer）===\n" +
             token + "\n" +
-            "P2P_LOCAL_IP=" + myIp + "\n" +
-            "（复制上面的 token 发给对端；对端连通后可用 ping " + myIp + " 互访）"
+            "P2P_LOCAL_IP=" + myIp + "\n"
         );
     }
 
@@ -261,10 +255,10 @@
 
             const out = await makeToken(pc.localDescription.sdp, "answer", myIp);
             state = "answering";
-
+            gateway.guestIp = myIp;
+            gateway._guestIpExplicit = true;
             // 立即返回 answer token，不等待 DataChannel 打开
             return (
-                "=== 本机 ANSWER token（复制后回传给对端，让其再执行一次 connectToPeer）===\n" +
                 out + "\n" +
                 "P2P_LOCAL_IP=" + myIp + "\n"
             );
@@ -288,4 +282,4 @@
 
     window.showLocalSdp = showLocalSdp;
     window.connectToPeer = connectToPeer;
-})();
+}

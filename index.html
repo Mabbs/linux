@@ -164,7 +164,7 @@
     import { consoleDevice, entropyDevice, spawnMachine, ethernetDevice, ethernetNetwork, fileSystemDevice } from "./vendor/linux/dist/index.js";
     import { fetchInternetGateway, proxyToGuest } from "./fetch-network.js";
     import { createHostDirectoryFS, HOSTFS_SUPPORTED } from "./hostfs.js";
-    import "./webrtc-p2p.js"; // 局域网 WebRTC 点对点直连桥（挂 window.showLocalSdp / window.connectToPeer）
+    import { initP2p } from "./webrtc-p2p.js"; // 局域网 WebRTC 点对点直连桥（initP2p(network, gateway) 注入交换机与网关）
 
     // 反向代理需要的全局状态，提前声明以便下面的 message 监听器(在初始化前就绑定)可访问。
     let gateway = null;       // fetchInternetGateway 返回的网关实例
@@ -387,7 +387,6 @@
     }
 
     const network = ethernetNetwork();
-    window.__netdev = network; // 暴露给 webrtc-p2p.js 的桥接逻辑
 
     // 随机化网关 MAC，避免两台机器在同一 L2 隧道里网关 MAC 相撞
     function randMac() {
@@ -404,6 +403,7 @@
         fetch: (...args) => fetch(...args), // 浏览器原生 fetch，代理到真实网络
         debug: false
       });
+      initP2p(network, gateway);
     } catch (err) {
       gatewayError = String(err && err.message ? err.message : err);
       term.write("\x1b[31mFailed to init gateway: " + gatewayError + "\x1b[0m\n");

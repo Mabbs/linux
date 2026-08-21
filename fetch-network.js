@@ -92,45 +92,6 @@ async function fetchWithFallback(gw, url, init) {
   }
 }
 
-// 字节级辅助
-function concatBytes(...chunks) {
-  let len = 0;
-  for (const c of chunks) len += c.length;
-  const out = new Uint8Array(len);
-  let off = 0;
-  for (const c of chunks) { out.set(c, off); off += c.length; }
-  return out;
-}
-function indexOfBytes(haystack, needle) {
-  const n = needle.length;
-  if (n === 0) return 0;
-  const last = haystack.length - n;
-  for (let i = 0; i <= last; i++) {
-    let ok = true;
-    for (let j = 0; j < n; j++) {
-      if (haystack[i + j] !== needle[j]) { ok = false; break; }
-    }
-    if (ok) return i;
-  }
-  return -1;
-}
-// 在 HTTP 请求头块末尾(\r\n\r\n 之前)插入一行 X-Fetch-Abort: <token>。
-// 找不到完整头块时原样返回(调用方需继续缓冲)。
-const CRLF = new Uint8Array([13, 10]);
-const CRLFCRLF = new Uint8Array([13, 10, 13, 10]);
-function insertAbortHeader(buf, token) {
-  const idx = indexOfBytes(buf, CRLFCRLF);
-  if (idx < 0) return buf;
-  const head = buf.subarray(0, idx);
-  const tail = buf.subarray(idx);
-  const inject = new TextEncoder().encode("\r\nX-Fetch-Abort: " + token);
-  const out = new Uint8Array(head.length + inject.length + tail.length);
-  out.set(head, 0);
-  out.set(inject, head.length);
-  out.set(tail, head.length + inject.length);
-  return out;
-}
-
 // 把上游响应体包一层：客户端断开导致本流被取消(pull 失败)时，取消本次
 // fetch 对应的 AbortController，释放仍在进行的上游下载。
 function wrapBodyForAbort(body, ac) {
@@ -158,12 +119,10 @@ function wrapBodyForAbort(body, ac) {
 // 代理 handler：收到标准 Request，按 scheme/port 构造上游 URL 去 fetch，
 // 透传/过滤头，回标准 Response（@tcpip/http 负责序列化，流式 chunked）。
 //
-// 连接断开即取消对应 fetch：
-//   - ac.signal 传给 fetch，TLS 回环路径还会通过 resolveSignal 拿到与本次
-//     客户端连接绑定的 signal（客户端一断，立刻 abort，含握手后等待响应头期间）；
-//   - 明文/其它路径没有外部 signal，则靠响应体被 @tcpip/http 取消时触发 abort。
+// 连接断开即取消对应 fetch：ac.signal 传给 fetch，响应体被 @tcpip/http 取消时
+// 触发 abort（明文路径无独立外部 signal）。
 // ---------------------------------------------------------------------------
-function makeProxyHandler(gw, scheme, port, opts = {}) {
+function makeProxyHandler(gw, scheme, port) {
   return async (request) => {
     const reqUrl = new URL(request.url); // @tcpip/http 已按 Host 头拼成 http://host/path
     const hostHeader = reqUrl.host;
@@ -172,16 +131,11 @@ function makeProxyHandler(gw, scheme, port, opts = {}) {
 
     // 每个请求一个 AbortController，连接断开时取消对应的上游 fetch。
     const ac = new AbortController();
-    if (typeof opts.resolveSignal === "function") {
-      const sig = opts.resolveSignal(request);
-      if (sig) sig.addEventListener("abort", () => ac.abort());
-    }
 
     const init = { method: request.method, headers: new Headers(), redirect: "follow", signal: ac.signal };
     for (const [k, v] of request.headers) {
       const lk = k.toLowerCase();
-      // 不向上游透传 X-Fetch-Abort（仅网关内部用于关联连接）。
-      if (["host", "content-length", "connection", "transfer-encoding", "x-fetch-abort"].includes(lk)) continue;
+      if (["host", "content-length", "connection", "transfer-encoding"].includes(lk)) continue;
       try { init.headers.set(k, v); } catch { }
     }
     if (["POST", "PUT", "PATCH"].includes(request.method) && request.body) {
@@ -455,7 +409,7 @@ async function readBody(res, idleMs) {
 
 // 反向代理用到的逐跳头(不应透传给 guest / 不应回传给浏览器)。
 const HOP_BY_HOP = ["host", "connection", "content-length", "transfer-encoding",
-  "x-fetch-abort", "keep-alive", "proxy-connection", "upgrade", "proxy-authenticate", "trailer"];
+  "keep-alive", "proxy-connection", "upgrade", "proxy-authenticate", "trailer"];
 
 export async function proxyToGuest(gw, req) {
   const guestIp = gw.guestIp || "10.0.2.15";
@@ -514,47 +468,51 @@ export async function proxyToGuest(gw, req) {
 }
 
 // ---------------------------------------------------------------------------
-// TLS 终结(443)：forge 解密后，把明文请求经回环 TCP 喂给本地 @tcpip/http
-// 代理服务(tlsLocalPort)，再把代理响应读回、加密发回客户机。
+// TLS 终结(443)：forge 完成 TLS 握手、读出明文请求后，不再把数据转发到上游，
+// 而是直接回一个 301 重定向，把客户机引到对应的 http:// 地址，由网关的明文
+// HTTP 代理(端口 80)接管后续请求。
 // ---------------------------------------------------------------------------
-async function serveTlsConn(gw, conn, stack) {
+async function serveTlsConn(gw, conn) {
   const reader = conn.readable.getReader();
   const writer = conn.writable.getWriter();
+  let reqBuf = "";   // 累积解密出的明文请求，直到头块结束(\r\n\r\n)
+  let responded = false;
 
-  let loopWriter = null;
-  let loopConn = null;
-  let loopClosed = false;
-  const pending = []; // 回环未连好前，暂存已解密的请求字节
-  let tlsClosed = false;
-
-  // 本次客户端 TLS 连接对应的 AbortController：客户端断开即取消上游 fetch。
-  const token = "gw" + (++gw._abortSeq);
-  const connAc = new AbortController();
-  gw._abortMap.set(token, connAc);
-  let headerInjected = false; // 已在第一笔完整请求头上注入 token
-  let headerBuf = new Uint8Array(0);
-
-  // 把解密后的明文请求字节转给回环代理；第一笔完整请求头里注入 abort token。
-  const forwardToLoop = (plain) => {
-    if (!loopWriter) { pending.push(plain); return; }
-    if (!headerInjected) {
-      headerBuf = concatBytes(headerBuf, plain);
-      if (indexOfBytes(headerBuf, CRLFCRLF) < 0) {
-        // 头还没收全，继续缓冲(上限保护，避免异常长头撑爆内存)。
-        if (headerBuf.length > 65536) { loopWriter.write(headerBuf).catch(() => { }); headerBuf = new Uint8Array(0); }
-        return;
+  // 从明文请求头中取出请求路径与 Host，拼出对应的 http:// 地址。
+  const buildLocation = () => {
+    const firstLineEnd = reqBuf.indexOf("\r\n");
+    const headEnd = reqBuf.indexOf("\r\n\r\n");
+    const requestLine = firstLineEnd >= 0 ? reqBuf.slice(0, firstLineEnd) : "";
+    const parts = requestLine.split(" ");
+    const path = parts.length >= 2 ? parts[1] : "/";
+    let host = "";
+    if (headEnd > 0 && firstLineEnd > 0) {
+      const restHead = reqBuf.slice(firstLineEnd + 2, headEnd);
+      for (const line of restHead.split("\r\n")) {
+        const i = line.indexOf(":");
+        if (i > 0 && line.slice(0, i).trim().toLowerCase() === "host") {
+          host = line.slice(i + 1).trim();
+          break;
+        }
       }
-      loopWriter.write(insertAbortHeader(headerBuf, token)).catch(() => { });
-      headerBuf = new Uint8Array(0);
-      headerInjected = true;
-    } else {
-      loopWriter.write(plain).catch(() => { });
     }
+    return "http://" + (host || gw.gatewayIp) + path;
   };
 
-  const abortUpstream = () => {
-    try { connAc.abort(); } catch { }
-    gw._abortMap.delete(token);
+  // 回 301 并关闭连接，客户机会跟着 Location 走 http 明文。
+  // 注意：tls.prepare() 需要原始字节串(内部 createBuffer)，不能传 Uint8Array，
+  // 传 Uint8Array 会经 util.binary.raw.encode 抛错导致 301 无法发出去。
+  const sendRedirect = () => {
+    responded = true;
+    const head = "HTTP/1.1 301 Moved Permanently\r\n"
+      + "Location: " + buildLocation() + "\r\n"
+      + "Content-Length: 0\r\n"
+      + "Connection: close\r\n"
+      + "\r\n";
+    try { tls.prepare(head); tls.process(); } catch (e) {
+      if (gw.debug) console.log("[fetch-gw] tls redirect send err:", e && e.message ? e.message : e);
+    }
+    try { tls.close(); } catch { }
   };
 
   const tls = forge.tls.createConnection({
@@ -568,51 +526,23 @@ async function serveTlsConn(gw, conn, stack) {
       forge.tls.CipherSuites.TLS_RSA_WITH_AES_128_CBC_SHA,
     ],
     verifyClient: false,
-    connected: () => {
-      stack.tcp.connect({ host: "127.0.0.1", port: gw.tlsLocalPort })
-        .then(async (lc) => {
-          loopConn = lc;
-          loopWriter = lc.writable.getWriter();
-          if (pending.length) { forwardToLoop(concatBytes(...pending)); pending.length = 0; }
-          const r = lc.readable.getReader();
-          try {
-            while (true) {
-              const { value, done } = await r.read();
-              if (done) break;
-              if (value && value.length) {
-                tls.prepare(encBin(value));
-                tls.process();
-              }
-            }
-          } catch { }
-          // 回环侧关闭 -> 关闭 TLS
-          if (!tlsClosed) { try { tls.close(); } catch { } }
-        })
-        .catch((e) => {
-          if (gw.debug) console.log("[fetch-gw] tls loopback connect err:", e && e.message ? e.message : e);
-          try { writer.close(); } catch { }
-        });
-    },
+    connected: () => { /* 握手完成，等待第一条明文请求 */ },
     tlsDataReady: (c) => {
       const bytes = decBin(c.tlsData.getBytes());
-      if (bytes.length) writer.write(bytes).catch(() => { });
+      if (bytes && bytes.length) writer.write(bytes).catch(() => { });
     },
     dataReady: (c) => {
+      if (responded) return; // 已回完 301，忽略后续数据
       const plain = decBin(c.data.getBytes());
-      if (plain && plain.length) forwardToLoop(plain);
+      if (plain && plain.length) reqBuf += new TextDecoder().decode(plain);
+      if (reqBuf.indexOf("\r\n\r\n") >= 0) sendRedirect();
     },
     closed: () => {
-      tlsClosed = true;
       writer.close().catch(() => { });
-      abortUpstream();
-      if (loopConn && !loopClosed) { loopClosed = true; try { loopConn.close(); } catch { } }
     },
     error: (c, e) => {
       if (gw.debug) console.log("[fetch-gw] tls error:", e && e.message ? e.message : e);
-      tlsClosed = true;
       writer.close().catch(() => { });
-      abortUpstream();
-      if (loopConn && !loopClosed) { loopClosed = true; try { loopConn.close(); } catch { } }
     },
   });
 
@@ -628,7 +558,6 @@ async function serveTlsConn(gw, conn, stack) {
     }
   } catch { }
   try { reader.releaseLock(); } catch { }
-  abortUpstream();
 }
 
 function acceptLoop(gw, listener, handler) {
@@ -659,7 +588,6 @@ export async function fetchInternetGateway(network, options = {}) {
     syntheticIp: options.syntheticIp || "203.0.113.1",
     dnsPort: options.dnsPort || 53,
     execPort: options.execPort || 8080,
-    tlsLocalPort: options.tlsLocalPort || 8443,
     forceHttps: options.forceHttps !== false,
     corsProxy: options.corsProxy !== undefined ? options.corsProxy : "https://cors-anywhere.mayx.eu.org/?",
     dohWire: options.dohWire || "https://dns.mayx.eu.org/dns-query",
@@ -673,9 +601,6 @@ export async function fetchInternetGateway(network, options = {}) {
     _guestIpExplicit: !!options.guestIp,
     // lwIP 栈引用，供 proxyToGuest 反向连入 guest。
     _stack: null,
-    // 连接 -> AbortController 映射，供 443 回环代理在客户端断开时取消 fetch。
-    _abortMap: new Map(),
-    _abortSeq: 0,
   };
 
   const stack = await createStack();
@@ -725,33 +650,24 @@ export async function fetchInternetGateway(network, options = {}) {
   // --- HTTP 服务(@tcpip/http) ---
   const http = await createHttp(stack.tcp);
   gw._http = http; // 反向代理(proxyToGuest)复用同一实例的 .fetch 客户端能力
-  // 80：明文代理（forceHttps 时升级 https）；回环 https：供 443 经 forge 解密后转发
+  // 80：明文代理（forceHttps 时升级 https）。
   const proxyServer = await http.serve({ port: 80 }, makeProxyHandler(gw, gw.forceHttps ? "https" : "http", 80));
   const execServer = await http.serve({ host: gw.gatewayIp, port: gw.execPort }, execHandler);
-  // 443 回环代理：通过注入的 X-Fetch-Abort 头找回本次客户端连接的 AbortController，
-  // 客户端一断开（TLS closed/error）即可立刻取消上游 fetch。
-  const tlsProxyServer = await http.serve({ host: "127.0.0.1", port: gw.tlsLocalPort }, makeProxyHandler(gw, "https", 443, {
-    resolveSignal: (request) => {
-      const t = request.headers.get("x-fetch-abort");
-      return t ? (gw._abortMap.get(t) || null)?.signal || null : null;
-    },
-  }));
 
-  // --- 443：TLS 终结，解密后回环到 tlsProxyServer ---
+  // --- 443：TLS 终结，握手读到明文请求后回 301 -> 明文代理 ---
   const tlsListener = await stack.tcp.listen({ port: 443 });
-  acceptLoop(gw, tlsListener, (conn) => serveTlsConn(gw, conn, stack));
+  acceptLoop(gw, tlsListener, (conn) => serveTlsConn(gw, conn));
 
   // --- DNS 服务 ---
   const dnsServer = startDnsServer(gw, stack);
 
   // 注意：必须返回完整的 gw 对象(而非只返回 {close})，因为 proxyToGuest 由页面经 service
-  // worker 桥接「外部」调用，依赖 gw._stack / gw.guestIp / gw._abortMap 等字段。若只返回
-  // {close}，gw._stack 会丢失 -> proxyToGuest 报 "gateway stack not ready"。
+  // worker 桥接「外部」调用，依赖 gw._stack / gw.guestIp 等字段。若只返回 {close}，
+  // gw._stack 会丢失 -> proxyToGuest 报 "gateway stack not ready"。
   gw.close = function () {
     closed = true;
     try { proxyServer.close(); } catch { }
     try { execServer.close(); } catch { }
-    try { tlsProxyServer.close(); } catch { }
     try { dnsServer.close(); } catch { }
     try { tlsListener.close(); } catch { }
     try { port.close(); } catch { }
